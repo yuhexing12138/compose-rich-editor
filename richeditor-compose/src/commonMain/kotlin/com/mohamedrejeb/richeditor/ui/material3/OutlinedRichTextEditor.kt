@@ -28,6 +28,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.*
+import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
+import com.mohamedrejeb.richeditor.model.ImageLoader
+import com.mohamedrejeb.richeditor.model.LocalImageLoader
 import com.mohamedrejeb.richeditor.model.RichTextState
 import com.mohamedrejeb.richeditor.ui.BasicRichTextEditor
 import com.mohamedrejeb.richeditor.ui.RichTextChangedListener
@@ -87,7 +90,7 @@ import kotlin.math.roundToInt
  * in different states. See [RichTextEditorDefaults.outlinedRichTextEditorColors].
  * @param contentPadding the padding to be applied to the content of the text field
  */
-@ExperimentalMaterial3Api
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalRichTextApi::class)
 @Composable
 public fun OutlinedRichTextEditor(
     state: RichTextState,
@@ -113,6 +116,7 @@ public fun OutlinedRichTextEditor(
     colors: RichTextEditorColors = RichTextEditorDefaults.outlinedRichTextEditorColors(),
     contentPadding: PaddingValues = RichTextEditorDefaults.outlinedRichTextEditorPadding(),
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
+    imageLoader: ImageLoader = LocalImageLoader.current,
 ) {
     // If color is not provided via the text style, use content color as a default
     val textColor = textStyle.color.takeOrElse {
@@ -150,6 +154,7 @@ public fun OutlinedRichTextEditor(
             maxLength = maxLength,
             onTextLayout = onTextLayout,
             undoBehavior = undoBehavior,
+            imageLoader = imageLoader,
             decorationBox = { innerTextField ->
                 RichTextEditorDefaults.OutlinedRichTextEditorDecorationBox(
                     value = state.textFieldValue.text,

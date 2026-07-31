@@ -28,6 +28,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.*
+import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
+import com.mohamedrejeb.richeditor.model.ImageLoader
+import com.mohamedrejeb.richeditor.model.LocalImageLoader
 import com.mohamedrejeb.richeditor.model.RichTextState
 import com.mohamedrejeb.richeditor.ui.BasicRichTextEditor
 import com.mohamedrejeb.richeditor.ui.UndoBehavior
@@ -86,7 +89,7 @@ import kotlin.math.roundToInt
  * in different states. See [TextFieldDefaults.textFieldColors].
  * @param contentPadding the padding to be applied to the content of the text field
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalRichTextApi::class)
 @Composable
 public fun RichTextEditor(
     state: RichTextState,
@@ -117,6 +120,7 @@ public fun RichTextEditor(
             RichTextEditorDefaults.richTextEditorWithLabelPadding()
         },
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
+    imageLoader: ImageLoader = LocalImageLoader.current,
 ) {
     // If color is not provided via the text style, use content color as a default
     val textColor = textStyle.color.takeOrElse {
@@ -145,6 +149,7 @@ public fun RichTextEditor(
             interactionSource = interactionSource,
             cursorBrush = SolidColor(colors.cursorColor(isError).value),
             undoBehavior = undoBehavior,
+            imageLoader = imageLoader,
             decorationBox = @Composable { innerTextField ->
                 // places leading icon, text field with label and placeholder, trailing icon
                 RichTextEditorDefaults.RichTextEditorDecorationBox(

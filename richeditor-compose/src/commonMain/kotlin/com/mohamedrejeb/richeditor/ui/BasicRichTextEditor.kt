@@ -6,6 +6,7 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
@@ -21,6 +22,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalDensity
@@ -31,8 +33,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
 import com.mohamedrejeb.richeditor.clipboard.ClipboardEventEffect
 import com.mohamedrejeb.richeditor.clipboard.createRichTextClipboardManager
+import com.mohamedrejeb.richeditor.model.ImageLoader
+import com.mohamedrejeb.richeditor.model.LocalImageLoader
+import com.mohamedrejeb.richeditor.model.LocalRichTextMaxImageWidthProvider
+import com.mohamedrejeb.richeditor.model.RichTextMaxImageWidthProvider
 import com.mohamedrejeb.richeditor.model.RichTextState
 import kotlinx.coroutines.CoroutineScope
 
@@ -89,6 +96,7 @@ import kotlinx.coroutines.CoroutineScope
  * innerTextField exactly once.
  *
  */
+@OptIn(ExperimentalRichTextApi::class)
 @Composable
 public fun BasicRichTextEditor(
     state: RichTextState,
@@ -106,6 +114,7 @@ public fun BasicRichTextEditor(
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     cursorBrush: Brush = SolidColor(Color.Black),
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
+    imageLoader: ImageLoader = LocalImageLoader.current,
     decorationBox: @Composable (innerTextField: @Composable () -> Unit) -> Unit =
         @Composable { innerTextField -> innerTextField() }
 ) {
@@ -125,6 +134,7 @@ public fun BasicRichTextEditor(
         interactionSource = interactionSource,
         cursorBrush = cursorBrush,
         undoBehavior = undoBehavior,
+        imageLoader = imageLoader,
         decorationBox = decorationBox,
         contentPadding = PaddingValues()
     )
@@ -183,6 +193,7 @@ public fun BasicRichTextEditor(
  * innerTextField exactly once.
  *
  */
+@OptIn(ExperimentalRichTextApi::class)
 @Composable
 public fun BasicRichTextEditor(
     state: RichTextState,
@@ -201,6 +212,7 @@ public fun BasicRichTextEditor(
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     cursorBrush: Brush = SolidColor(Color.Black),
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
+    imageLoader: ImageLoader = LocalImageLoader.current,
     decorationBox: @Composable (innerTextField: @Composable () -> Unit) -> Unit =
         @Composable { innerTextField -> innerTextField() },
     contentPadding: PaddingValues
@@ -208,6 +220,21 @@ public fun BasicRichTextEditor(
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
     val clipboard = LocalClipboard.current
+
+    /**
+     * v2026-08-01 Phase 4：编辑模式下渲染 inline 图片
+     *
+     * 原始库在 BasicRichTextEditor 中未传 inlineContent 参数，
+     * 导致 RichSpanStyle.Image 在编辑模式下显示为 U+FFFD 乱码方框。
+     *
+     * 修复方案（参照 BasicRichText.kt 实现）：
+     * 1. 创建 maxImageWidthProvider 用于容器宽度 clamp
+     * 2. 用 CompositionLocalProvider 注入 LocalImageLoader 和 LocalRichTextMaxImageWidthProvider
+     * 3. 在 BasicTextField 调用中传入 inlineContent 参数
+     * 4. 在 modifier 链中添加 onSizeChanged 更新容器宽度
+     */
+    val maxImageWidthProvider = remember { RichTextMaxImageWidthProvider() }
+
     val richClipboardManager = remember(state, clipboard) {
         createRichTextClipboardManager(
             richTextState = state,
@@ -254,7 +281,11 @@ public fun BasicRichTextEditor(
         }
     }
 
-    CompositionLocalProvider(LocalClipboard provides richClipboardManager) {
+    CompositionLocalProvider(
+        LocalClipboard provides richClipboardManager,
+        LocalImageLoader provides imageLoader,
+        LocalRichTextMaxImageWidthProvider provides maxImageWidthProvider,
+    ) {
         // Capture position on the innerTextField (the actual text content composable),
         // not on the outer BasicTextField, so trigger-suggestion popups can anchor
         // precisely at the text content's origin - not at the top of the decorated
@@ -338,7 +369,14 @@ public fun BasicRichTextEditor(
                                 layoutDirection = layoutDirection,
                                 scope = rememberCoroutineScope()
                             )
-                ),
+                )
+                // v2026-08-01 Phase 4：更新容器宽度，供 RichSpanStyle.Image 按 maxWidth 缩放
+                .onSizeChanged { size ->
+                    val newWidth = with(density) { size.width.toSp() }
+                    if (newWidth != maxImageWidthProvider.maxWidth) {
+                        maxImageWidthProvider.maxWidth = newWidth
+                    }
+                },
             enabled = enabled,
             readOnly = readOnly,
             textStyle = textStyle,
@@ -365,6 +403,10 @@ public fun BasicRichTextEditor(
             interactionSource = interactionSource,
             cursorBrush = cursorBrush,
             decorationBox = positionCapturingDecorationBox,
+            // v2026-08-01 Phase 4：传入 inlineContent 以渲染 RichSpanStyle.Image
+            inlineContent = remember(state.inlineContentMap.toMap()) {
+                state.inlineContentMap
+            },
         )
     }
 }
