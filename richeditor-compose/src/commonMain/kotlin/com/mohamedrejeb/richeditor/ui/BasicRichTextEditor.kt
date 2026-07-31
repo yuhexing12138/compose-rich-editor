@@ -6,7 +6,6 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
@@ -222,16 +221,15 @@ public fun BasicRichTextEditor(
     val clipboard = LocalClipboard.current
 
     /**
-     * v2026-08-01 Phase 4：编辑模式下渲染 inline 图片
+     * v2026-08-01 Phase 4：编辑模式下 inline 图片渲染限制
      *
-     * 原始库在 BasicRichTextEditor 中未传 inlineContent 参数，
-     * 导致 RichSpanStyle.Image 在编辑模式下显示为 U+FFFD 乱码方框。
+     * Compose Foundation 1.11.0（BOM 2026.04.01）的 BasicTextField 已移除 inlineContent 参数，
+     * 因此编辑模式下 RichSpanStyle.Image 只能显示为占位符（U+FFFD）。
+     * 只读版本 BasicRichText 使用 BasicText（仍支持 inlineContent）可完整渲染图片。
      *
-     * 修复方案（参照 BasicRichText.kt 实现）：
-     * 1. 创建 maxImageWidthProvider 用于容器宽度 clamp
-     * 2. 用 CompositionLocalProvider 注入 LocalImageLoader 和 LocalRichTextMaxImageWidthProvider
-     * 3. 在 BasicTextField 调用中传入 inlineContent 参数
-     * 4. 在 modifier 链中添加 onSizeChanged 更新容器宽度
+     * 保留 maxImageWidthProvider + LocalImageLoader 注入，确保：
+     * 1. 切换到只读模式时能立即渲染图片
+     * 2. onSizeChanged 持续更新容器宽度，供 RichSpanStyle.Image 按 maxWidth 缩放
      */
     val maxImageWidthProvider = remember { RichTextMaxImageWidthProvider() }
 
@@ -403,10 +401,9 @@ public fun BasicRichTextEditor(
             interactionSource = interactionSource,
             cursorBrush = cursorBrush,
             decorationBox = positionCapturingDecorationBox,
-            // v2026-08-01 Phase 4：传入 inlineContent 以渲染 RichSpanStyle.Image
-            inlineContent = remember(state.inlineContentMap.toMap()) {
-                state.inlineContentMap
-            },
+            // v2026-08-01 Phase 4：Compose 1.11.0 的 BasicTextField 已移除 inlineContent 参数
+            // 编辑模式下 RichSpanStyle.Image 显示为占位符，只读 BasicRichText 才完整渲染图片
+            // 若需编辑时预览图片，需切换为 BasicText + 手动管理光标，或等待库官方支持
         )
     }
 }
