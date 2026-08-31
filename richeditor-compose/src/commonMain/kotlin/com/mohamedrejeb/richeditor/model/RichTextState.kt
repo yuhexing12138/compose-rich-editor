@@ -25,6 +25,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.isSpecified
+import androidx.compose.ui.unit.isUnspecified
 import androidx.compose.ui.unit.sp
 import com.mohamedrejeb.richeditor.annotation.InternalRichTextApi
 import androidx.compose.ui.util.fastCoerceAtLeast
