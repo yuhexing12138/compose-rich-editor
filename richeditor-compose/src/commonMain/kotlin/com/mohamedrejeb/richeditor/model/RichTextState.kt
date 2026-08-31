@@ -5392,11 +5392,50 @@ public class RichTextState internal constructor(
 
         val firstNewParagraph = newParagraphs.first()
 
-        val richSpan = getRichSpanByTextIndex(
-            textIndex = position - 1,
-            ignoreCustomFiltering = true,
-        )
-            ?: return
+        /**
+         * 段落级定位（与 performInsertImage 一致）：
+         *
+         * 原实现 `getRichSpanByTextIndex(position - 1) ?: return` 有两个缺陷：
+         * 1. **空文档 bug**：position == 0 时 `position - 1 == -1`，
+         *    `getFirstNonEmptyChild` 对无 children 的空段返回 null →
+         *    `?: return` 静默退出，往空文档粘贴/插入多段 markdown 完全无效果；
+         * 2. **段落间连接空格**：段落间的 `' '`（updateRichParagraphList 里
+         *    append(' ')）不属于任何 RichSpan，光标停在空格上时
+         *    `getRichSpanByTextIndex` 返回 null，粘贴会错位。
+         *
+         * 这里遍历 richParagraphList 累计 raw text 偏移（含段落间空格），
+         * 精确定位 position 所在段落，再用 findSpanInParagraph 找锚点 span。
+         */
+        var cursor = 0
+        var locatedParagraph: RichParagraph? = null
+        var locatedParagraphStartOffset = 0
+        for (p in richParagraphList) {
+            val start = cursor
+            val len = paragraphTextLength(p)
+            cursor = start + len
+            if (position >= start && position <= cursor) {
+                locatedParagraph = p
+                locatedParagraphStartOffset = start
+                break
+            }
+            cursor++ // 段落间连接空格占 1 字符
+        }
+
+        val richSpan = if (locatedParagraph != null) {
+            findSpanInParagraph(
+                p = locatedParagraph,
+                textIndex = position,
+                paragraphStartOffset = locatedParagraphStartOffset,
+            ) ?: locatedParagraph.children.lastOrNull()
+                ?: RichSpan(paragraph = locatedParagraph)
+        } else {
+            // 兜底：段落遍历未命中（理论不会发生），退回原 getRichSpanByTextIndex 逻辑
+            getRichSpanByTextIndex(
+                textIndex = position - 1,
+                ignoreCustomFiltering = true,
+            ) ?: richParagraphList.last().children.firstOrNull()
+                ?: return
+        }
 
         val targetParagraph = richSpan.paragraph
         val paragraphIndex = richParagraphList.indexOf(targetParagraph)
