@@ -125,6 +125,24 @@ public class RichTextState internal constructor(
      */
     internal var suppressUndoShortcuts: Boolean = false
 
+    /**
+     * v2026-08-31：编辑器正文行高（由 `BasicRichTextEditor` 从 `textStyle.lineHeight` 注入）。
+     *
+     * **为什么需要**：Compose 排版对每个 ParagraphStyle range 执行
+     * `defaultParagraphStyle.merge(range.item)`（见 `AnnotatedString.normalizedParagraphStyles`），
+     * **default 的已指定字段优先**。若编辑器 textStyle 指定了 lineHeight
+     * （Material3 typography 通常自带，如 bodyLarge 的 24.sp），段落 range 里预置的
+     * 图片行高会被它覆盖，图片段落行高被锁死为一行正文，覆盖层画大图必然相互重叠。
+     *
+     * 因此 `BasicRichTextEditor` 传给 `BasicTextField` 的 textStyle 已把 lineHeight
+     * 剥成 Unspecified，原始值注入本字段，由 [withImageBlockLineHeight] 还回每个段落
+     * range（普通段落视觉不变，图片段落撑到图片高度）。
+     *
+     * 默认 [TextUnit.Unspecified]：不经编辑器组合直接使用 `RichTextState` 时无注入，
+     * 段落行高行为与旧版一致。
+     */
+    internal var editorLineHeight: TextUnit = TextUnit.Unspecified
+
     internal val richParagraphList = mutableStateListOf<RichParagraph>()
     internal var visualTransformation: VisualTransformation by mutableStateOf(VisualTransformation.None)
     internal var textFieldValue by mutableStateOf(TextFieldValue())
@@ -2796,11 +2814,17 @@ public class RichTextState internal constructor(
     private fun ParagraphStyle.withImageBlockLineHeight(
         richParagraph: RichParagraph,
     ): ParagraphStyle {
+        /** 段落内最大图片高度；无图片或高度未解析时保持 Unspecified */
         var maxImageHeight = TextUnit.Unspecified
 
         fun walk(richSpan: RichSpan) {
             val imageStyle = richSpan.richSpanStyle as? RichSpanStyle.Image
-            if (imageStyle != null && imageStyle.height.value > maxImageHeight.value) {
+            if (
+                imageStyle != null &&
+                imageStyle.height.isSpecified &&
+                imageStyle.height.value > 0f &&
+                (maxImageHeight.isUnspecified || imageStyle.height.value > maxImageHeight.value)
+            ) {
                 maxImageHeight = imageStyle.height
             }
             richSpan.children.forEach { walk(it) }
@@ -2808,16 +2832,49 @@ public class RichTextState internal constructor(
 
         richParagraph.children.forEach { walk(it) }
 
-        /** NaN 参与比较恒为 false：Unspecified / 未解析出高度时自动跳过 */
-        if (maxImageHeight.value <= 0f) return this
+        /**
+         * v2026-08-31 修复：段落行高被 textStyle 的 lineHeight 锁死导致图片重叠。
+         *
+         * Compose 排版对每个 ParagraphStyle range 执行 `defaultParagraphStyle.merge(range.item)`
+         * （AnnotatedString.normalizedParagraphStyles），**default 的已指定字段优先**。
+         * 编辑器 textStyle 自带的 lineHeight（如 Material3 bodyLarge 的 24.sp）作为 default，
+         * 会覆盖段落 range 里预置的图片行高 → 图片段落行高被锁死为一行正文，
+         * 覆盖层按占位符所在行的 lineTop 画大图 → 相邻图片相互覆盖。
+         *
+         * 修复：BasicRichTextEditor 传给 BasicTextField 的 textStyle 已剥掉 lineHeight
+         * （置 Unspecified），原始行高经 [editorLineHeight] 注入，这里把它还回每个段落
+         * range——default 变 Unspecified 后，range 的显式行高直接生效：
+         * - 普通段落：lineHeight = max(段落自身行高, 编辑器正文行高) → 视觉与原先一致
+         * - 图片段落：lineHeight 再取 max(…, 图片高度) → 行高撑到图片高度，消除重叠
+         *
+         * 注意 [TextUnit.Unspecified].value 是 NaN，NaN 参与数值比较恒为 false，
+         * 必须用 isSpecified/isUnspecified 判断，不能用 value 与 0 比较。
+         */
+        var hasCandidate = false
+        var wantedLineHeight = TextUnit.Unspecified
 
-        val wantedLineHeight =
-            if (lineHeight.value > maxImageHeight.value) lineHeight else maxImageHeight
+        /** 取各候选行高中的最大值（跳过 Unspecified / 非正值） */
+        fun consider(candidate: TextUnit) {
+            if (
+                candidate.isSpecified &&
+                candidate.value > 0f &&
+                (!hasCandidate || candidate.value > wantedLineHeight.value)
+            ) {
+                wantedLineHeight = candidate
+                hasCandidate = true
+            }
+        }
+
+        consider(lineHeight)
+        consider(editorLineHeight)
+        consider(maxImageHeight)
+
+        if (!hasCandidate) return this
 
         /**
          * 用"新样式.merge(旧样式)"而不是"旧样式.merge(新样式)"：
-         * merge 以接收方的已指定字段为准，这样图片高度才能覆盖段落原有的 lineHeight，
-         * 保证段落高度永远不小于图片高度。
+         * merge 以接收方的已指定字段为准，这样合成出的段落行高才能覆盖
+         * 段落样式中其他来源的 lineHeight，保证段落高度永远不小于图片高度。
          */
         return ParagraphStyle(lineHeight = wantedLineHeight).merge(this)
     }

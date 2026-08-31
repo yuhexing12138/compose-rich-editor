@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.TextUnit
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
 import com.mohamedrejeb.richeditor.clipboard.ClipboardEventEffect
 import com.mohamedrejeb.richeditor.clipboard.createRichTextClipboardManager
@@ -224,6 +225,38 @@ public fun BasicRichTextEditor(
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
     val clipboard = LocalClipboard.current
+
+    /**
+     * v2026-08-31：剥离 textStyle 的 lineHeight + 注入正文行高，修复图片段落行高被锁死。
+     *
+     * Compose 排版对每个 ParagraphStyle range 执行 `defaultParagraphStyle.merge(range.item)`
+     * （AnnotatedString.normalizedParagraphStyles），**default（BasicTextField 的 textStyle）
+     * 的已指定字段优先**。textStyle 自带的 lineHeight（Material3 typography 通常指定，
+     * 如 bodyLarge 的 24.sp）会覆盖段落 range 里预置的图片行高 → 图片段落行高被锁死为
+     * 一行正文 → 覆盖层按占位符行的 lineTop 画大图 → 相邻图片相互重叠。
+     *
+     * 处理：传给 BasicTextField 的 textStyle 剥掉 lineHeight（置 Unspecified）；
+     * 原始值注入 state.editorLineHeight，由 withImageBlockLineHeight 还回每个段落
+     * range——普通段落行高视觉不变，图片段落撑到图片高度。
+     */
+    SideEffect {
+        val lineHeight = textStyle.lineHeight
+        /**
+         * 变化检测不能用裸 `!=`：TextUnit.Unspecified.value 是 NaN，NaN != NaN 恒为 true，
+         * 会造成"每次组合都重建"的无限循环。目标值 Unspecified 时按"当前是否已 Unspecified"判断。
+         */
+        val changed =
+            if (lineHeight.isSpecified)
+                state.editorLineHeight != lineHeight
+            else
+                state.editorLineHeight.isSpecified
+        if (changed) {
+            state.editorLineHeight = lineHeight
+            /** 行高进段落 range 依赖 annotatedString 重建，注入变化后立即重建一次 */
+            state.updateAnnotatedString()
+        }
+    }
+    val effectiveTextStyle = textStyle.copy(lineHeight = TextUnit.Unspecified)
 
     /**
      * v2026-08-01 Phase 4：编辑模式下 inline 图片渲染限制
@@ -424,7 +457,7 @@ public fun BasicRichTextEditor(
                 ),
             enabled = enabled,
             readOnly = readOnly,
-            textStyle = textStyle,
+            textStyle = effectiveTextStyle,
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
             singleLine = singleLine,
