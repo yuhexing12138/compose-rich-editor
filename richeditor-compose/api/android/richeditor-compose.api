@@ -218,6 +218,7 @@ public final class com/mohamedrejeb/richeditor/model/RichTextState {
 	public final fun increaseListLevel ()V
 	public final fun insertHtml (Ljava/lang/String;I)V
 	public final fun insertHtmlAfterSelection (Ljava/lang/String;)V
+	public final fun insertImage (Ljava/lang/Object;Ljava/lang/String;)V
 	public final fun insertMarkdown (Ljava/lang/String;I)V
 	public final fun insertMarkdownAfterSelection (Ljava/lang/String;)V
 	public final fun insertToken (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
@@ -232,6 +233,7 @@ public final class com/mohamedrejeb/richeditor/model/RichTextState {
 	public final fun registerTrigger (Lcom/mohamedrejeb/richeditor/model/trigger/Trigger;)V
 	public final fun removeCode ()V
 	public final fun removeCodeSpan ()V
+	public final fun removeImage (Ljava/lang/Object;)Z
 	public final fun removeLink ()V
 	public final fun removeOrderedList ()V
 	public final fun removeParagraphStyle (Landroidx/compose/ui/text/ParagraphStyle;)V

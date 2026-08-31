@@ -312,6 +312,78 @@ public class RichTextState internal constructor(
     }
 
     /**
+     * Insert an inline image span at the current selection, wrapped in empty lines.
+     *
+     * **This is the recommended way to insert an image programmatically.**
+     *
+     * Why not `addText(...)` + `addRichSpan(RichSpanStyle.Image(...))`? That path sets
+     * the Image span's raw-text field to whatever character `addText` received (e.g.
+     * `"\n"`), while [RichSpanStyle.Image.appendCustomContent] renders an
+     * inline-content placeholder (U+FFFD) and never appends the raw text. The raw-text
+     * character `"\n"` therefore never reaches the layout as a line break, and multiple
+     * images inserted that way land on the same line and overlap. The Markdown parser
+     * instead gives the Image span a raw text of `"\uFFFD"` (one placeholder char),
+     * which matches the rendered inline-content placeholder 1-to-1.
+     *
+     * This method delegates to [insertMarkdownAfterSelection] with the standard
+     * Markdown image syntax `![alt](model)` and two surrounding empty lines, so:
+     * - the image owns a standalone paragraph (empty line before & after);
+     * - the Image span's raw text is the single placeholder char `\uFFFD`,
+     *   aligning offsets with the rendered annotated string;
+     * - the existing styles around the caret are preserved (see [insertMarkdownAfterSelection]).
+     *
+     * @param model Image source, must be a [String] (URL or absolute file path).
+     *        Non-String models have no Markdown representation and are silently ignored.
+     * @param contentDescription Optional alt text, becomes the Markdown alt and
+     *        [RichSpanStyle.Image.contentDescription].
+     */
+    @ExperimentalRichTextApi
+    public fun insertImage(
+        model: Any,
+        contentDescription: String? = null,
+    ) {
+        val modelText = model as? String ?: return
+        val alt = contentDescription.orEmpty()
+        insertMarkdownAfterSelection("\n\n![$alt]($modelText)\n\n")
+    }
+
+    /**
+     * Removes the first inline image span whose [model] equals [model].
+     *
+     * This is the counterpart of [insertImage] for edit-time deletion. It deletes
+     * the image's placeholder character via [removeTextRange] - a **local edit**
+     * that keeps the rest of the document, selection and undo history intact,
+     * instead of round-tripping the whole document through [setMarkdown].
+     *
+     * If the image sits on its own paragraph, one adjacent line break on each
+     * side is swallowed too so the removal does not leave a dangling empty
+     * paragraph. When the image is inline between two text runs (no line breaks),
+     * only the placeholder itself is removed.
+     *
+     * @param model Image source (URL or absolute file path) as passed to [insertImage].
+     * @return true if an image span with the given model was found and removed;
+     *         false otherwise (no such image in the document).
+     */
+    @ExperimentalRichTextApi
+    public fun removeImage(model: Any): Boolean {
+        val imageSpan = styledRichSpanList.firstOrNull { span ->
+            (span.richSpanStyle as? RichSpanStyle.Image)?.model == model
+        } ?: return false
+
+        val range = imageSpan.textRange
+        val text = textFieldValue.text
+        var start = range.min
+        var end = range.max
+
+        // 图片独占一行时，吞并前后的相邻 \n，避免删除后留下空段
+        if (start > 0 && text[start - 1] == '\n') start--
+        if (end < text.length && text[end] == '\n') end++
+
+        removeTextRange(TextRange(start, end))
+        return true
+    }
+
+    /**
      * Dismiss the active trigger query without inserting a token. Leaves the typed text in place
      * (e.g. `@moh` stays as plain characters) and suppresses immediate re-detection until the
      * cursor leaves the typed range.
