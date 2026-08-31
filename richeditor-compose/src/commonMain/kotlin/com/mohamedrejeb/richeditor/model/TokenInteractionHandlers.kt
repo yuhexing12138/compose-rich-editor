@@ -44,12 +44,38 @@ public fun interface TokenHoverHandler {
 }
 
 /**
+ * Handles a tap on an inline [RichSpanStyle.Image] in the **editor** surface
+ * ([com.mohamedrejeb.richeditor.ui.BasicRichTextEditor] and its Material wrappers).
+ *
+ * 编辑态下图片由覆盖层直接绘制（见 ui/InlineImageOverlay.kt），不是 Token，
+ * 无法走 [TokenClickHandler]，因此提供独立的回调：命中图片矩形后携带该图片
+ * 的 [RichSpanStyle.Image] 样式对象与点击坐标回调。
+ *
+ * Typical uses:
+ * - 打开图片全屏预览。
+ */
+@ExperimentalRichTextApi
+public fun interface ImageClickHandler {
+    public operator fun invoke(image: RichSpanStyle.Image, tapOffset: Offset)
+}
+
+/**
  * Screen-wide default for [RichSpanStyle.Token] taps. Prefer the composable
  * `onTokenClick` parameter for a specific surface; use this CompositionLocal
  * when multiple `RichText`s on one screen should share one handler.
  */
 @ExperimentalRichTextApi
 public val LocalTokenClickHandler: ProvidableCompositionLocal<TokenClickHandler?> =
+    staticCompositionLocalOf { null }
+
+/**
+ * Screen-wide default for inline [RichSpanStyle.Image] taps in the editor surface.
+ * Prefer the composable `onImageClick` parameter for a specific surface; use this
+ * CompositionLocal when the handler should be provided above the editor subtree
+ * （与 [LocalTokenClickHandler] / [LocalImageLoader] 同一注入方式）。
+ */
+@ExperimentalRichTextApi
+public val LocalImageClickHandler: ProvidableCompositionLocal<ImageClickHandler?> =
     staticCompositionLocalOf { null }
 
 /**

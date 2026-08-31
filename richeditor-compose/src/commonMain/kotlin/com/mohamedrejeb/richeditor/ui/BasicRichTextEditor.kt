@@ -35,7 +35,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
 import com.mohamedrejeb.richeditor.clipboard.ClipboardEventEffect
 import com.mohamedrejeb.richeditor.clipboard.createRichTextClipboardManager
+import com.mohamedrejeb.richeditor.model.ImageClickHandler
 import com.mohamedrejeb.richeditor.model.ImageLoader
+import com.mohamedrejeb.richeditor.model.LocalImageClickHandler
 import com.mohamedrejeb.richeditor.model.LocalImageLoader
 import com.mohamedrejeb.richeditor.model.LocalRichTextMaxImageWidthProvider
 import com.mohamedrejeb.richeditor.model.RichTextMaxImageWidthProvider
@@ -114,6 +116,7 @@ public fun BasicRichTextEditor(
     cursorBrush: Brush = SolidColor(Color.Black),
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
     imageLoader: ImageLoader = LocalImageLoader.current,
+    onImageClick: ImageClickHandler? = LocalImageClickHandler.current,
     decorationBox: @Composable (innerTextField: @Composable () -> Unit) -> Unit =
         @Composable { innerTextField -> innerTextField() }
 ) {
@@ -134,6 +137,7 @@ public fun BasicRichTextEditor(
         cursorBrush = cursorBrush,
         undoBehavior = undoBehavior,
         imageLoader = imageLoader,
+        onImageClick = onImageClick,
         decorationBox = decorationBox,
         contentPadding = PaddingValues()
     )
@@ -212,6 +216,7 @@ public fun BasicRichTextEditor(
     cursorBrush: Brush = SolidColor(Color.Black),
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
     imageLoader: ImageLoader = LocalImageLoader.current,
+    onImageClick: ImageClickHandler? = LocalImageClickHandler.current,
     decorationBox: @Composable (innerTextField: @Composable () -> Unit) -> Unit =
         @Composable { innerTextField -> innerTextField() },
     contentPadding: PaddingValues
@@ -305,6 +310,31 @@ public fun BasicRichTextEditor(
                 }
             }
 
+        /**
+         * v2026-08-31：编辑态内联图片覆盖层
+         *
+         * BasicTextField 不支持 inlineContent（foundation 1.11 连该参数都没有），
+         * 所以图片不能靠库自带的 InlineTextContent 渲染，只能在文字之上自己画。
+         *
+         * 三步走：
+         * 1. 组合期取 painter + 按容器宽度算显示尺寸（resolveInlineImagePlacements）
+         * 2. 尺寸写回 Image span 并重建 annotatedString，让段落 lineHeight 预留纵向空间
+         *    （ApplyInlineImageSizes）
+         * 3. drawInlineImages 按"行"定位，在文本之上画出位图
+         *
+         * 放在 CompositionLocalProvider 内部，保证 imageLoader 与容器宽度
+         * 对 Coil 等加载器可见。
+         */
+        val inlineImagePlacements = resolveInlineImagePlacements(
+            state = state,
+            imageLoader = imageLoader,
+            maxImageWidth = maxImageWidthProvider.maxWidth,
+        )
+        ApplyInlineImageSizes(
+            state = state,
+            placements = inlineImagePlacements,
+        )
+
         BasicTextField(
             value = state.textFieldValue,
             onValueChange = {
@@ -374,7 +404,24 @@ public fun BasicRichTextEditor(
                     if (newWidth != maxImageWidthProvider.maxWidth) {
                         maxImageWidthProvider.maxWidth = newWidth
                     }
-                },
+                }
+                // v2026-08-31：必须挂在链尾，drawWithContent 会包住前面所有绘制
+                // （含 drawRichSpanStyle 与文本本体），这样图片才画在最上层。
+                .pointerInputInlineImages(
+                    state = state,
+                    placements = inlineImagePlacements,
+                    density = density,
+                    topPadding = with(density) { contentPadding.calculateTopPadding().toPx() },
+                    startPadding = with(density) { contentPadding.calculateStartPadding(layoutDirection).toPx() },
+                    onImageClick = onImageClick,
+                )
+                .drawInlineImages(
+                    state = state,
+                    placements = inlineImagePlacements,
+                    density = density,
+                    topPadding = with(density) { contentPadding.calculateTopPadding().toPx() },
+                    startPadding = with(density) { contentPadding.calculateStartPadding(layoutDirection).toPx() },
+                ),
             enabled = enabled,
             readOnly = readOnly,
             textStyle = textStyle,

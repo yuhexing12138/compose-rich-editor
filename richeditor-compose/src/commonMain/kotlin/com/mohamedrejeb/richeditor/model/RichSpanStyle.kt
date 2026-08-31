@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.isUnspecified
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
@@ -249,9 +250,43 @@ public interface RichSpanStyle {
 
             richTextState.usedInlineContentMapKeys.add(id)
 
-            appendInlineContent(id = id)
+            /**
+             * v2026-08-31：把占位符染成透明。
+             *
+             * `appendInlineContent` 打的占位符是 U+FFFD。只有 BasicText（BasicRichText）支持
+             * inlineContent；编辑态走的是 BasicTextField，而 Compose Foundation 1.11 连
+             * inlineContent 参数都不存在，U+FFFD 会被当成普通字符画出来 —— 用户看到的就是"问号方块"。
+             * 真正的位图改由 BasicRichTextEditor 的覆盖层绘制（见 ui/InlineImageOverlay.kt），
+             * 这里只需让底下的占位符隐形。
+             *
+             * 只读态下 inlineContent 会顶替占位符的绘制区域，透明化不产生任何副作用。
+             */
+            withStyle(SpanStyle(color = Color.Transparent)) {
+                appendInlineContent(id = id)
+            }
 
             return this
+        }
+
+        /**
+         * v2026-08-31：由编辑态覆盖层回填解码后的真实尺寸。
+         *
+         * 编辑态下 `createInlineTextContent` 里的 `LaunchedEffect` 永远不会执行 ——
+         * BasicTextField 不组合 inlineContent，children 这个 composable 根本不会被调用，
+         * 于是 width/height 恒为插入时的 0：既画不出图，段落也不会预留纵向空间（尺寸死锁）。
+         *
+         * 改由覆盖层在组合期解析出尺寸后调用本方法写回，并同步进 [resolvedDimensionsCache]。
+         *
+         * @param newWidth 钳制后的显示宽度（sp）
+         * @param newHeight 钳制后的显示高度（sp）
+         */
+        internal fun setResolvedSize(
+            newWidth: TextUnit,
+            newHeight: TextUnit,
+        ) {
+            width = newWidth
+            height = newHeight
+            resolvedDimensionsCache[model] = newWidth to newHeight
         }
 
         private fun createInlineTextContent(

@@ -29,7 +29,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.*
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
+import com.mohamedrejeb.richeditor.model.ImageClickHandler
 import com.mohamedrejeb.richeditor.model.ImageLoader
+import com.mohamedrejeb.richeditor.model.LocalImageClickHandler
 import com.mohamedrejeb.richeditor.model.LocalImageLoader
 import com.mohamedrejeb.richeditor.model.RichTextState
 import com.mohamedrejeb.richeditor.ui.BasicRichTextEditor
@@ -121,6 +123,7 @@ public fun RichTextEditor(
         },
     undoBehavior: UndoBehavior = UndoBehavior.Enabled,
     imageLoader: ImageLoader = LocalImageLoader.current,
+    onImageClick: ImageClickHandler? = LocalImageClickHandler.current,
 ) {
     // If color is not provided via the text style, use content color as a default
     val textColor = textStyle.color.takeOrElse {
@@ -150,6 +153,7 @@ public fun RichTextEditor(
             cursorBrush = SolidColor(colors.cursorColor(isError).value),
             undoBehavior = undoBehavior,
             imageLoader = imageLoader,
+            onImageClick = onImageClick,
             decorationBox = @Composable { innerTextField ->
                 // places leading icon, text field with label and placeholder, trailing icon
                 RichTextEditorDefaults.RichTextEditorDecorationBox(

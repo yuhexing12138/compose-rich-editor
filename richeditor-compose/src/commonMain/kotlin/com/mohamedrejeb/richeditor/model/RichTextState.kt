@@ -2479,7 +2479,11 @@ public class RichTextState internal constructor(
                     return@fastForEachIndexed
                 }
 
-                withStyle(richParagraph.paragraphStyle.merge(richParagraph.type.getStyle(config))) {
+                val paragraphStyle = richParagraph.paragraphStyle
+                    .merge(richParagraph.type.getStyle(config))
+                    .withImageBlockLineHeight(richParagraph)
+
+                withStyle(paragraphStyle) {
                     withStyle(richParagraph.getListMarkerSpanStyle(config.listMarkerStyleBehavior)) {
                         append(richParagraph.type.startText)
                     }
@@ -2537,6 +2541,57 @@ public class RichTextState internal constructor(
             )
         }
         styledRichSpanList.addAll(newStyledRichSpanList)
+    }
+
+    /**
+     * v2026-08-31：为"含内联图片的段落"补齐 lineHeight，把纵向空间显式占住。
+     *
+     * **为什么需要**
+     * Compose Foundation 1.11 的 BasicTextField 不支持 inlineContent，
+     * `RichSpanStyle.Image` 的 Placeholder 高度完全不参与文本排版，
+     * 段落高度会退化成"一行普通文字"的高度。即便覆盖层把图画了出来，
+     * 也会压在后面的文字上（插入时前后补的 `\n` 只是换行，不会撑高段落）。
+     *
+     * **为什么用纯函数而不是写回 paragraphStyle**
+     * 写回会修改 `richParagraphList` 的结构状态，而段落布局回调
+     * （[onTextLayout] → [adjustRichParagraphLayout]）又会反过来触发
+     * [updateAnnotatedString]，极易形成"改样式→重新排版→再改样式"的回环。
+     * 这里改成每次重建 annotatedString 时按当前图片高度即时计算，不落盘。
+     *
+     * 图片高度由编辑态覆盖层解码后写回（[RichSpanStyle.Image.setResolvedSize]），
+     * 未解析出来之前返回原样式，下一帧解析完成后会再走一次 [updateAnnotatedString]。
+     *
+     * @param richParagraph 正在构建 annotatedString 的段落
+     * @return 补上图片行高后的段落样式
+     */
+    @OptIn(ExperimentalRichTextApi::class)
+    private fun ParagraphStyle.withImageBlockLineHeight(
+        richParagraph: RichParagraph,
+    ): ParagraphStyle {
+        var maxImageHeight = TextUnit.Unspecified
+
+        fun walk(richSpan: RichSpan) {
+            val imageStyle = richSpan.richSpanStyle as? RichSpanStyle.Image
+            if (imageStyle != null && imageStyle.height.value > maxImageHeight.value) {
+                maxImageHeight = imageStyle.height
+            }
+            richSpan.children.forEach { walk(it) }
+        }
+
+        richParagraph.children.forEach { walk(it) }
+
+        /** NaN 参与比较恒为 false：Unspecified / 未解析出高度时自动跳过 */
+        if (maxImageHeight.value <= 0f) return this
+
+        val wantedLineHeight =
+            if (lineHeight.value > maxImageHeight.value) lineHeight else maxImageHeight
+
+        /**
+         * 用"新样式.merge(旧样式)"而不是"旧样式.merge(新样式)"：
+         * merge 以接收方的已指定字段为准，这样图片高度才能覆盖段落原有的 lineHeight，
+         * 保证段落高度永远不小于图片高度。
+         */
+        return ParagraphStyle(lineHeight = wantedLineHeight).merge(this)
     }
 
     /**
