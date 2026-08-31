@@ -43,6 +43,7 @@ import com.mohamedrejeb.richeditor.model.trigger.TriggerQuery
 import com.mohamedrejeb.richeditor.model.trigger.detectActiveTrigger
 import com.mohamedrejeb.richeditor.paragraph.RichParagraph
 import com.mohamedrejeb.richeditor.paragraph.type.*
+import com.mohamedrejeb.richeditor.utils.InlineContentPlaceholder
 import com.mohamedrejeb.richeditor.platform.currentPlatform
 import com.mohamedrejeb.richeditor.paragraph.type.ParagraphType.Companion.startText
 import com.mohamedrejeb.richeditor.parser.html.RichTextStateHtmlParser
@@ -312,30 +313,39 @@ public class RichTextState internal constructor(
     }
 
     /**
-     * Insert an inline image span at the current selection, wrapped in empty lines.
+     * Insert an inline image at the current selection, always on its own paragraph.
      *
-     * **This is the recommended way to insert an image programmatically.**
+     * **Why this method exists (v2026-08-31 rewrite):**
+     * - The earlier implementation delegated to [insertMarkdownAfterSelection] with
+     *   `\n\n![](model)\n\n`. That route is fragile:
+     *   1. `insertParagraphs` silently returns when the span before the caret
+     *      cannot be resolved (e.g. an empty document where `position == 0`
+     *      resolves to `getRichSpanByTextIndex(-1)` and yields `null`), so
+     *      image insertion intermittently did nothing;
+     *   2. multi-paragraph markdown (`\n\n ![] \n\n`) walks the complicated
+     *      "first + middle + last paragraph" splice path in `insertParagraphs`,
+     *      which misbehaves when empty paragraphs are involved - consecutive
+     *      images could be dropped (only the first one survived).
      *
-     * Why not `addText(...)` + `addRichSpan(RichSpanStyle.Image(...))`? That path sets
-     * the Image span's raw-text field to whatever character `addText` received (e.g.
-     * `"\n"`), while [RichSpanStyle.Image.appendCustomContent] renders an
-     * inline-content placeholder (U+FFFD) and never appends the raw text. The raw-text
-     * character `"\n"` therefore never reaches the layout as a line break, and multiple
-     * images inserted that way land on the same line and overlap. The Markdown parser
-     * instead gives the Image span a raw text of `"\uFFFD"` (one placeholder char),
-     * which matches the rendered inline-content placeholder 1-to-1.
-     *
-     * This method delegates to [insertMarkdownAfterSelection] with the standard
-     * Markdown image syntax `![alt](model)` and two surrounding empty lines, so:
-     * - the image owns a standalone paragraph (empty line before & after);
-     * - the Image span's raw text is the single placeholder char `\uFFFD`,
-     *   aligning offsets with the rendered annotated string;
-     * - the existing styles around the caret are preserved (see [insertMarkdownAfterSelection]).
+     * **New implementation:**
+     * - Builds a dedicated [RichParagraph] holding a single
+     *   [RichSpanStyle.Image] span whose raw text is the inline-content
+     *   placeholder `\uFFFD` (one char, aligned with the rendered placeholder).
+     * - Splices the caret paragraph via [RichParagraph.slice] so any text after
+     *   the caret moves to a trailing paragraph; the image lands on its own
+     *   paragraph between the two halves. That guarantees the image owns a
+     *   standalone visual line (paragraph boundary), so the edit-time overlay
+     *   (see `ui/InlineImageOverlay.kt`) draws consecutive images on distinct
+     *   lines instead of overlapping.
+     * - Seeds `width = 200.sp, height = 200.sp` so `withImageBlockLineHeight`
+     *   immediately reserves vertical space; the overlay resolves the real
+     *   intrinsic size later via `setResolvedSize`.
+     * - Does not round-trip through the Markdown parser, so it cannot be broken
+     *   by parser edge cases and does not disturb other rich span styles.
      *
      * @param model Image source, must be a [String] (URL or absolute file path).
-     *        Non-String models have no Markdown representation and are silently ignored.
-     * @param contentDescription Optional alt text, becomes the Markdown alt and
-     *        [RichSpanStyle.Image.contentDescription].
+     *        Non-String models have no representable form and are silently ignored.
+     * @param contentDescription Optional alt text / accessibility description.
      */
     @ExperimentalRichTextApi
     public fun insertImage(
@@ -343,8 +353,149 @@ public class RichTextState internal constructor(
         contentDescription: String? = null,
     ) {
         val modelText = model as? String ?: return
-        val alt = contentDescription.orEmpty()
-        insertMarkdownAfterSelection("\n\n![$alt]($modelText)\n\n")
+        recordHistory(CommitTrigger.Structural) {
+            performInsertImage(model = modelText, contentDescription = contentDescription)
+        }
+    }
+
+    /**
+     * Core insertion routine for [insertImage]; runs inside [recordHistory].
+     *
+     * @param model 图片源（绝对路径或 URL）
+     * @param contentDescription 可选 alt 文本
+     */
+    private fun performInsertImage(
+        model: String,
+        contentDescription: String?,
+    ) {
+        if (richParagraphList.isEmpty())
+            richParagraphList.add(RichParagraph())
+
+        // 空段预处理：保证首段至少存在一个 span（与 insertParagraphs 的约定一致）
+        richParagraphList.first().let { p ->
+            if (p.children.isEmpty())
+                p.children.add(RichSpan(paragraph = p))
+        }
+
+        val insertIndex = selection.max.coerceIn(0, annotatedString.text.length)
+
+        /**
+         * 段落级定位：遍历 richParagraphList，按"段落文本长度 + 段落间连接空格"累计
+         * raw text 偏移，找到 insertIndex 落在哪个段落。
+         *
+         * 为什么不能直接用 getRichSpanByTextIndex：
+         * 段落间的连接空格（updateRichParagraphList 里 append(' ')）不属于任何 RichSpan，
+         * 连续插入图片时，第一次插入后光标停在段尾空格上，getRichSpanByTextIndex
+         * 在空格位置返回 null，fallback 会错误地指向第一段 → 第二张图插到文档开头。
+         */
+        var cursor = 0
+        var targetParagraph: RichParagraph? = null
+        var targetIndex = 0
+        var paragraphStartOffset = 0
+        for ((i, p) in richParagraphList.withIndex()) {
+            val start = cursor
+            val len = paragraphTextLength(p)
+            cursor = start + len
+            if (insertIndex >= start && insertIndex <= cursor) {
+                targetParagraph = p
+                targetIndex = i
+                paragraphStartOffset = start
+                break
+            }
+            cursor++ // 段落间连接空格占 1 字符
+        }
+        val paragraph = targetParagraph ?: richParagraphList.lastOrNull() ?: return
+
+        // 段内定位：找包含 insertIndex 的 span（用于 slice）；段尾空格时退回最后一个 span
+        val anchorSpan = findSpanInParagraph(
+            p = paragraph,
+            textIndex = insertIndex,
+            paragraphStartOffset = paragraphStartOffset,
+        ) ?: paragraph.children.lastOrNull()
+            ?: RichSpan(paragraph = paragraph)
+
+        // 构造图片段落：独占一段，raw text 为 1 个 \uFFFD 占位符（与 rendered placeholder 对齐）
+        val imageParagraph = RichParagraph().apply {
+            children.add(
+                RichSpan(
+                    text = InlineContentPlaceholder,
+                    paragraph = this,
+                    richSpanStyle = RichSpanStyle.Image(
+                        model = model,
+                        width = 200.sp,
+                        height = 200.sp,
+                        contentDescription = contentDescription,
+                    ),
+                )
+            )
+        }
+
+        // 若光标后仍有内容，把后半拆分到新的尾段落，确保图片独占段落边界
+        val sliceIndex = insertIndex
+        val tailParagraph = paragraph.slice(
+            richSpan = anchorSpan,
+            startIndex = sliceIndex,
+            removeSliceIndex = false,
+        )
+
+        // 段落顺序：目标段(前半) -> 图片段 -> 尾段(原后半)
+        richParagraphList.add(targetIndex + 1, imageParagraph)
+        richParagraphList.add(targetIndex + 2, tailParagraph)
+
+        // 重建 annotatedString / raw text，并让 selection 落到图片占位符之后
+        updateRichParagraphList()
+    }
+
+    /**
+     * 递归计算 [RichSpan] 树的文本长度（text + 所有 children 的文本）。
+     */
+    private fun richSpanTextLength(span: RichSpan): Int =
+        span.text.length + span.children.sumOf { richSpanTextLength(it) }
+
+    /**
+     * 计算 [RichParagraph] 在 raw text 中贡献的字符数（startText + children 文本）。
+     */
+    private fun paragraphTextLength(p: RichParagraph): Int =
+        p.type.startText.length + p.children.sumOf { richSpanTextLength(it) }
+
+    /**
+     * 在段落内查找"覆盖 [textIndex]（或其边界）"的最深 [RichSpan]。
+     *
+     * @param p 目标段落
+     * @param textIndex 全局 raw text 索引（相对整个文档）
+     * @param paragraphStartOffset 该段落在 raw text 中的起始偏移（不含段落间连接空格）
+     * @return 命中的 span；未命中（如索引落在段落间空格）返回 null
+     */
+    private fun findSpanInParagraph(
+        p: RichParagraph,
+        textIndex: Int,
+        paragraphStartOffset: Int,
+    ): RichSpan? {
+        var cursor = paragraphStartOffset + p.type.startText.length
+        for (child in p.children) {
+            val len = richSpanTextLength(child)
+            if (textIndex >= cursor && textIndex <= cursor + len) {
+                return findSpanInRichSpan(child, textIndex - cursor) ?: child
+            }
+            cursor += len
+        }
+        return null
+    }
+
+    /**
+     * 在 [RichSpan] 树内按局部索引（相对 span 开头）查找最深命中的子 span。
+     */
+    private fun findSpanInRichSpan(span: RichSpan, localIndex: Int): RichSpan? {
+        if (localIndex < span.text.length) return span
+        var cursor = span.text.length
+        for (child in span.children) {
+            val len = richSpanTextLength(child)
+            if (localIndex >= cursor && localIndex <= cursor + len) {
+                return findSpanInRichSpan(child, localIndex - cursor) ?: child
+            }
+            cursor += len
+        }
+        return span
     }
 
     /**
@@ -375,9 +526,14 @@ public class RichTextState internal constructor(
         var start = range.min
         var end = range.max
 
-        // 图片独占一行时，吞并前后的相邻 \n，避免删除后留下空段
-        if (start > 0 && text[start - 1] == '\n') start--
-        if (end < text.length && text[end] == '\n') end++
+        /**
+         * 吞并图片占位符前后的一个连接字符，避免删除后残留孤立空格/换行：
+         * - insertImage 创建的图片独占段落，raw text 中前后是段落间连接空格（' '）
+         * - 旧数据（内联插入）图片前后可能是 \n 或文字
+         * 只在相邻字符是空格或换行时吞并，绝不越过文字字符。
+         */
+        if (start > 0 && (text[start - 1] == ' ' || text[start - 1] == '\n')) start--
+        if (end < text.length && (text[end] == ' ' || text[end] == '\n')) end++
 
         removeTextRange(TextRange(start, end))
         return true
@@ -5326,7 +5482,17 @@ public class RichTextState internal constructor(
         annotatedString = buildAnnotatedString {
             var index = 0
             richParagraphList.fastForEachIndexed { i, richParagraph ->
-                withStyle(richParagraph.paragraphStyle.merge(richParagraph.type.getStyle(config))) {
+                /**
+                 * 与 updateAnnotatedString 保持一致的图片段落行高预留：
+                 * withImageBlockLineHeight 会把含图片的段落 lineHeight 撑到图片高度，
+                 * 让覆盖层绘制前段落就占好纵向空间，避免"先画出来压字、painter 解析后
+                 * 才撑高"的闪烁/重叠窗口。
+                 */
+                withStyle(
+                    richParagraph.paragraphStyle
+                        .merge(richParagraph.type.getStyle(config))
+                        .withImageBlockLineHeight(richParagraph)
+                ) {
                     withStyle(
                         richParagraph.getListMarkerSpanStyle(config.listMarkerStyleBehavior)
                     ) {

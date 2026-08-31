@@ -190,17 +190,37 @@ internal fun Modifier.drawInlineImages(
     val textLength = layoutResult.layoutInput.text.length
     if (textLength == 0) return@drawWithContent
 
-    placements.forEach { placement ->
+    /**
+     * 按文档顺序（textRange.start 升序）绘制。
+     *
+     * **防重叠兜底（v2026-08-31）**：正常情况下图片各自独占段落
+     * （paragraph boundary），layout 会给不同段落分配不同 line，
+     * getLineTop 天然错开。但若因历史数据 / 内联插入（图片与文字同段）
+     * 导致两张图落在同一 line，getLineForOffset 返回相同 line、lineTop
+     * 相同 → 会叠在同一位置。这里对"同一 line 上的多张图"做垂直错开：
+     * 从上一张图底部继续往下排，保证视觉上永远不会重叠。
+     */
+    val sortedPlacements = placements.sortedBy { it.textRange.start }
+    var lastLine = -1
+    var cursorY = 0f
+
+    sortedPlacements.forEach { placement ->
         val widthPx = with(density) { placement.width.toPx() }
         val heightPx = with(density) { placement.height.toPx() }
         if (widthPx <= 0f || heightPx <= 0f) return@forEach
 
         val offset = placement.textRange.start.coerceIn(0, textLength - 1)
         val line = layoutResult.getLineForOffset(offset)
+        val lineTop = layoutResult.getLineTop(line)
+
+        // 同一 line 内多图错开；不同 line 用各自的 lineTop
+        val y = if (line == lastLine) cursorY else lineTop
+        cursorY = y + heightPx
+        lastLine = line
 
         translate(
             left = layoutResult.getLineLeft(line) + startPadding,
-            top = layoutResult.getLineTop(line) + topPadding,
+            top = y + topPadding,
         ) {
             with(placement.data.painter) {
                 draw(size = Size(widthPx, heightPx))
@@ -237,16 +257,30 @@ internal fun findInlineImagePlacementAt(
     val textLength = layoutResult.layoutInput.text.length
     if (textLength == 0) return null
 
-    for (placement in placements) {
+    /**
+     * 与 [drawInlineImages] 保持完全一致的"同 line 垂直错开"计算：
+     * 绘制时对同一 line 上的多张图会从上一张图底部继续往下排，
+     * 命中检测必须用同一套 y 计算，否则点击会错位。
+     */
+    val sortedPlacements = placements.sortedBy { it.textRange.start }
+    var lastLine = -1
+    var cursorY = 0f
+
+    for (placement in sortedPlacements) {
         val widthPx = with(density) { placement.width.toPx() }
         val heightPx = with(density) { placement.height.toPx() }
         if (widthPx <= 0f || heightPx <= 0f) continue
 
         val offset = placement.textRange.start.coerceIn(0, textLength - 1)
         val line = layoutResult.getLineForOffset(offset)
+        val lineTop = layoutResult.getLineTop(line)
+
+        val y = if (line == lastLine) cursorY else lineTop
+        cursorY = y + heightPx
+        lastLine = line
 
         val left = layoutResult.getLineLeft(line) + startPadding
-        val top = layoutResult.getLineTop(line) + topPadding
+        val top = y + topPadding
 
         if (position.x >= left && position.x <= left + widthPx &&
             position.y >= top && position.y <= top + heightPx
