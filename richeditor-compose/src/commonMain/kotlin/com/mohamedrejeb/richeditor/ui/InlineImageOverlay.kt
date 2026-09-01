@@ -23,6 +23,79 @@ import com.mohamedrejeb.richeditor.model.ImageLoader
 import com.mohamedrejeb.richeditor.model.RichSpanStyle
 import com.mohamedrejeb.richeditor.model.RichTextState
 
+// region v2026-08-31 临时诊断（定位重叠根因后整段删除）
+
+/**
+ * 临时诊断总开关。
+ *
+ * 置 false 后本文件与 `RichTextState.withImageBlockLineHeight` 里的诊断输出全部静默；
+ * 根因确认后请连同本 region、两处 dump 调用、`Float.f1` 一并删除。
+ *
+ * 日志前缀与抓取方式：
+ * - `[INLINE-IMG]`：绘制期每张图片的真实行坐标与矩形（内容变化时才打印，不会每帧刷屏）
+ * - `[INLINE-LH]`：段落行高合成过程（图片高度 / 编辑器行高 / 最终取值）
+ *
+ * ```bash
+ * adb logcat -s System.out:I | grep INLINE
+ * ```
+ */
+internal const val INLINE_IMAGE_DIAGNOSTICS = true
+
+/** 上一帧绘制诊断的内容签名；相同则跳过打印，避免每帧刷屏 */
+private var lastDrawSignature = ""
+
+/** 上一帧行高诊断的内容签名 */
+private var lastLineHeightSignature = ""
+
+/**
+ * 行高诊断入口：由 `RichTextState.withImageBlockLineHeight` 调用。
+ *
+ * 只在签名变化时打印，签名由段落标识 + 各候选行高 + 最终取值拼成。
+ *
+ * @param paragraphId 段落的稳定标识（用于区分不同段落）
+ * @param paragraphLineHeight 段落自身声明的 lineHeight 原始值（sp，NaN 表示未指定）
+ * @param editorLineHeight 编辑器正文行高（sp，NaN 表示未指定）
+ * @param maxImageHeight 段落内最大图片高度（sp，NaN 表示无图片）
+ * @param finalLineHeight 最终合成的行高（sp，NaN 表示未设置）
+ */
+internal fun dumpLineHeightDiagnostics(
+    paragraphId: String,
+    paragraphLineHeight: Float,
+    editorLineHeight: Float,
+    maxImageHeight: Float,
+    finalLineHeight: Float,
+) {
+    if (!INLINE_IMAGE_DIAGNOSTICS) return
+
+    val signature = listOf(
+        paragraphId,
+        paragraphLineHeight,
+        editorLineHeight,
+        maxImageHeight,
+        finalLineHeight,
+    ).joinToString("|")
+
+    if (signature == lastLineHeightSignature) return
+    lastLineHeightSignature = signature
+
+    println(
+        "[INLINE-LH] $paragraphId 段落行高=${paragraphLineHeight.f1()} " +
+            "编辑器行高=${editorLineHeight.f1()} 图片高度=${maxImageHeight.f1()} " +
+            "=> 最终=${finalLineHeight.f1()}"
+    )
+}
+
+/**
+ * 诊断专用：把 Float 收敛成一位小数输出，避免 NaN 与长小数干扰阅读。
+ *
+ * @receiver 待格式化的数值（可能是 [Float.NaN]，即 TextUnit.Unspecified）
+ * @return 一位小数的字符串；NaN 原样输出为 "NaN"，一眼可辨"未指定"
+ */
+private fun Float.f1(): String =
+    if (isNaN()) "NaN" else (kotlin.math.round(this * 10f) / 10f).toString()
+
+// endregion
+
 /**
  * 一张内联图片在**编辑态**的绘制计划。
  *
@@ -204,6 +277,12 @@ internal fun Modifier.drawInlineImages(
     var lastLine = -1
     var cursorY = 0f
 
+    /** 临时诊断：本帧每张图的排版坐标明细；null 表示诊断已关闭 */
+    val diagRows = if (INLINE_IMAGE_DIAGNOSTICS) ArrayList<String>() else null
+    /** 临时诊断：上一张图的 bottom，用于判定相邻图是否重叠 */
+    var prevBottom = 0f
+    var hasPrev = false
+
     sortedPlacements.forEach { placement ->
         val widthPx = with(density) { placement.width.toPx() }
         val heightPx = with(density) { placement.height.toPx() }
@@ -218,6 +297,23 @@ internal fun Modifier.drawInlineImages(
         cursorY = y + heightPx
         lastLine = line
 
+        if (diagRows != null) {
+            val lineBottom = layoutResult.getLineBottom(line)
+            val bottom = y + heightPx
+            val overlap = if (hasPrev && y < prevBottom - 0.5f) {
+                " <<< 与上一张重叠 ${(prevBottom - y).f1()}px"
+            } else ""
+
+            diagRows.add(
+                "#${diagRows.size} range=${placement.textRange.start}..${placement.textRange.end}" +
+                    " line=$line lineTop=${lineTop.f1()} lineBottom=${lineBottom.f1()}" +
+                    " 行高=${(lineBottom - lineTop).f1()} 图高=${heightPx.f1()}" +
+                    " 落点=[${y.f1()}..${bottom.f1()}]$overlap"
+            )
+            prevBottom = bottom
+            hasPrev = true
+        }
+
         translate(
             left = layoutResult.getLineLeft(line) + startPadding,
             top = y + topPadding,
@@ -225,6 +321,25 @@ internal fun Modifier.drawInlineImages(
             with(placement.data.painter) {
                 draw(size = Size(widthPx, heightPx))
             }
+        }
+    }
+
+    /**
+     * 临时诊断：整帧只在内容签名变化时打印一次。
+     *
+     * 签名包含每张图的行坐标与落点，插入新图 / 行高变化 / 尺寸回填都会改变签名 → 打印；
+     * 单纯滚动或光标闪烁不会改变签名 → 静默。
+     */
+    if (diagRows != null && diagRows.isNotEmpty()) {
+        val signature = diagRows.joinToString("|") { row ->
+            row.substringBefore(" <<<")
+        } + "#lines=${layoutResult.lineCount}"
+        if (signature != lastDrawSignature) {
+            lastDrawSignature = signature
+            println(
+                "[INLINE-IMG] lineCount=${layoutResult.lineCount} textLen=$textLength " +
+                    "图片数=${diagRows.size}\n  " + diagRows.joinToString("\n  ")
+            )
         }
     }
 }

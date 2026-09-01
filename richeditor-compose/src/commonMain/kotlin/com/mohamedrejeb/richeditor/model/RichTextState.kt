@@ -36,6 +36,7 @@ import androidx.compose.ui.util.fastForEachIndexed
 import androidx.compose.ui.util.fastForEachReversed
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
 import com.mohamedrejeb.richeditor.model.history.CommitTrigger
+import com.mohamedrejeb.richeditor.ui.dumpLineHeightDiagnostics
 import com.mohamedrejeb.richeditor.model.history.RichTextHistory
 import com.mohamedrejeb.richeditor.model.history.RichTextHistoryHost
 import com.mohamedrejeb.richeditor.model.history.RichTextSnapshot
@@ -2871,13 +2872,33 @@ public class RichTextState internal constructor(
         consider(editorLineHeight)
         consider(maxImageHeight)
 
-        if (!hasCandidate) return this
+        if (!hasCandidate) {
+            /**
+             * 临时诊断（v2026-08-31，根因确认后随 InlineImageOverlay 的诊断 region 一并删除）：
+             * 三方行高全为 Unspecified → 本段落不设 lineHeight，图片纵向空间完全没预留。
+             */
+            dumpLineHeightDiagnostics(
+                paragraphId = "段落#${richParagraph.hashCode()}",
+                paragraphLineHeight = lineHeight.value,
+                editorLineHeight = editorLineHeight.value,
+                maxImageHeight = maxImageHeight.value,
+                finalLineHeight = Float.NaN,
+            )
+            return this
+        }
 
         /**
          * 用"新样式.merge(旧样式)"而不是"旧样式.merge(新样式)"：
          * merge 以接收方的已指定字段为准，这样合成出的段落行高才能覆盖
          * 段落样式中其他来源的 lineHeight，保证段落高度永远不小于图片高度。
          */
+        dumpLineHeightDiagnostics(
+            paragraphId = "段落#${richParagraph.hashCode()}",
+            paragraphLineHeight = lineHeight.value,
+            editorLineHeight = editorLineHeight.value,
+            maxImageHeight = maxImageHeight.value,
+            finalLineHeight = wantedLineHeight.value,
+        )
         return ParagraphStyle(lineHeight = wantedLineHeight).merge(this)
     }
 
