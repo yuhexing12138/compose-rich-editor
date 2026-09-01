@@ -145,6 +145,22 @@ public class RichTextState internal constructor(
      */
     internal var editorLineHeight: TextUnit = TextUnit.Unspecified
 
+    /**
+     * v2026-09-01：编辑态内联图片渲染开关（默认 `true`，保持库既有行为）。
+     *
+     * 关闭后（块级图片编辑器场景）：
+     * - `BasicRichTextEditor` 的覆盖层整体跳过（`resolveInlineImagePlacements` /
+     *   `ApplyInlineImageSizes` / `drawInlineImages` / `pointerInputInlineImages`），
+     *   state 里的 image span 不画真图；
+     * - [withImageBlockLineHeight] 不为含图段落撑行高，图片段落行高与正文一致；
+     * - image span 本体仍保留在段落树里（raw text 的 U+FFFD 占位符，编辑态下透明
+     *   且只占一个字符宽），作为撤销/重做的状态载体不受影响——真实图片由
+     *   宿主（如 BodyBlocksEditor 的 Image 标记块）自行渲染。
+     *
+     * 典型用法：`state.inlineImageRendering = false`（创建 state 后设置一次即可）。
+     */
+    public var inlineImageRendering: Boolean by mutableStateOf(true)
+
     internal val richParagraphList = mutableStateListOf<RichParagraph>()
     internal var visualTransformation: VisualTransformation by mutableStateOf(VisualTransformation.None)
     internal var textFieldValue by mutableStateOf(TextFieldValue())
@@ -2816,6 +2832,9 @@ public class RichTextState internal constructor(
     private fun ParagraphStyle.withImageBlockLineHeight(
         richParagraph: RichParagraph,
     ): ParagraphStyle {
+        /** v2026-09-01：内联图片渲染关闭时不撑行高——真实图片由宿主块级渲染 */
+        if (!inlineImageRendering) return this
+
         /** 段落内最大图片高度；无图片或高度未解析时保持 Unspecified */
         var maxImageHeight = TextUnit.Unspecified
 

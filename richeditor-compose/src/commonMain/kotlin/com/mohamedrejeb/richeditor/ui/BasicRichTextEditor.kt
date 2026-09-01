@@ -358,16 +358,26 @@ public fun BasicRichTextEditor(
          *
          * 放在 CompositionLocalProvider 内部，保证 imageLoader 与容器宽度
          * 对 Coil 等加载器可见。
+         *
+         * v2026-09-01：`state.inlineImageRendering == false` 时整体跳过——
+         * 块级图片编辑器（宿主用独立 Image 块渲染真图）把 state 里的 image span
+         * 仅作撤销/重做状态载体，不需要编辑器画图、也不需要为图撑行高。
          */
-        val inlineImagePlacements = resolveInlineImagePlacements(
-            state = state,
-            imageLoader = imageLoader,
-            maxImageWidth = maxImageWidthProvider.maxWidth,
-        )
-        ApplyInlineImageSizes(
-            state = state,
-            placements = inlineImagePlacements,
-        )
+        val inlineImagePlacements = if (state.inlineImageRendering) {
+            resolveInlineImagePlacements(
+                state = state,
+                imageLoader = imageLoader,
+                maxImageWidth = maxImageWidthProvider.maxWidth,
+            )
+        } else {
+            emptyList()
+        }
+        if (state.inlineImageRendering) {
+            ApplyInlineImageSizes(
+                state = state,
+                placements = inlineImagePlacements,
+            )
+        }
 
         BasicTextField(
             value = state.textFieldValue,
@@ -439,22 +449,30 @@ public fun BasicRichTextEditor(
                         maxImageWidthProvider.maxWidth = newWidth
                     }
                 }
-                // v2026-08-31：必须挂在链尾，drawWithContent 会包住前面所有绘制
-                // （含 drawRichSpanStyle 与文本本体），这样图片才画在最上层。
-                .pointerInputInlineImages(
-                    state = state,
-                    placements = inlineImagePlacements,
-                    density = density,
-                    topPadding = with(density) { contentPadding.calculateTopPadding().toPx() },
-                    startPadding = with(density) { contentPadding.calculateStartPadding(layoutDirection).toPx() },
-                    onImageClick = onImageClick,
-                )
-                .drawInlineImages(
-                    state = state,
-                    placements = inlineImagePlacements,
-                    density = density,
-                    topPadding = with(density) { contentPadding.calculateTopPadding().toPx() },
-                    startPadding = with(density) { contentPadding.calculateStartPadding(layoutDirection).toPx() },
+                .then(
+                    // v2026-09-01：inlineImageRendering 关闭时跳过覆盖层——
+                    // 不画图、不响应图片点击；必须挂在链尾，drawWithContent 会包住
+                    // 前面所有绘制（含 drawRichSpanStyle 与文本本体），图片才画在最上层。
+                    if (state.inlineImageRendering) {
+                        Modifier
+                            .pointerInputInlineImages(
+                                state = state,
+                                placements = inlineImagePlacements,
+                                density = density,
+                                topPadding = with(density) { contentPadding.calculateTopPadding().toPx() },
+                                startPadding = with(density) { contentPadding.calculateStartPadding(layoutDirection).toPx() },
+                                onImageClick = onImageClick,
+                            )
+                            .drawInlineImages(
+                                state = state,
+                                placements = inlineImagePlacements,
+                                density = density,
+                                topPadding = with(density) { contentPadding.calculateTopPadding().toPx() },
+                                startPadding = with(density) { contentPadding.calculateStartPadding(layoutDirection).toPx() },
+                            )
+                    } else {
+                        Modifier
+                    }
                 ),
             enabled = enabled,
             readOnly = readOnly,
