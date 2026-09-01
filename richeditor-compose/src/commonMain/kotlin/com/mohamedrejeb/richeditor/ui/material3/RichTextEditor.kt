@@ -115,6 +115,12 @@ public fun RichTextEditor(
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     shape: Shape = RichTextEditorDefaults.filledShape,
     colors: RichTextEditorColors = RichTextEditorDefaults.richTextEditorColors(),
+    /**
+     * 编辑器最小高度（含上下 contentPadding）。默认跟随 Material3 TextField 的
+     * 56dp 标准高度；块级编辑器（多段落各自独立 TextField）需要让块高 = 内容行数
+     * × 行距（块间距才能与块内行距严格一致），可传 0.dp 关闭强制撑高。
+     */
+    minHeight: Dp = TextFieldDefaults.MinHeight,
     contentPadding: PaddingValues =
         if (label == null) {
             RichTextEditorDefaults.richTextEditorWithoutLabelPadding()
@@ -137,7 +143,7 @@ public fun RichTextEditor(
             modifier = modifier
                 .defaultMinSize(
                     minWidth = TextFieldDefaults.MinWidth,
-                    minHeight = TextFieldDefaults.MinHeight
+                    minHeight = minHeight
                 ),
             enabled = enabled,
             readOnly = readOnly,
