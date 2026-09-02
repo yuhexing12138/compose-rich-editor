@@ -2,6 +2,7 @@ package com.mohamedrejeb.richeditor.parser.markdown
 
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
@@ -21,6 +22,7 @@ import com.mohamedrejeb.richeditor.parser.RichTextStateParser
 import com.mohamedrejeb.richeditor.parser.html.BrElement
 import com.mohamedrejeb.richeditor.parser.html.RichTextStateHtmlParser
 import com.mohamedrejeb.richeditor.parser.html.htmlElementsSpanStyleEncodeMap
+import com.mohamedrejeb.richeditor.parser.html.CssEncoder
 import com.mohamedrejeb.richeditor.parser.utils.*
 import com.mohamedrejeb.richeditor.utils.InlineContentPlaceholder
 import org.intellij.markdown.MarkdownElementTypes
@@ -324,6 +326,22 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                 currentRichSpan = currentRichSpan?.parent
             },
             onHtmlTag = { tag ->
+                // 从 inline HTML 标签解析 style 属性中的 font-weight（如
+                // `<span style="font-weight:800">`），使非 700 字重经 markdown 往返保留。
+                fun parseInlineStyleFontWeight(raw: String): FontWeight? {
+                    val style = Regex(
+                        """style\s*=\s*["']([^"']*)["']""",
+                        RegexOption.IGNORE_CASE,
+                    ).find(raw)?.groupValues?.getOrNull(1)?.trim() ?: return null
+                    if (style.isEmpty()) return null
+                    val weightRaw = style.split(";")
+                        .firstOrNull { it.contains("font-weight", ignoreCase = true) }
+                        ?.substringAfter(":", "")
+                        ?.trim()
+                        ?: return null
+                    return CssEncoder.parseCssFontWeight(weightRaw)
+                }
+
                 val tagName = tag
                     .substringAfter("</")
                     .substringAfter("<")
@@ -347,7 +365,12 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                     if (tagName != BrElement) {
                         val currentRichParagraph = richParagraphList.last()
                         val newRichSpan = RichSpan(paragraph = currentRichParagraph)
-                        newRichSpan.spanStyle = tagSpanStyle ?: SpanStyle()
+                        // 合并 style 中的 font-weight（库原生 onHtmlTag 只按标签名查映射，
+                        // 会丢弃属性，导致非 700 字重在 markdown 行内往返中丢失）。
+                        val styleWeight = parseInlineStyleFontWeight(tag)
+                        newRichSpan.spanStyle = (tagSpanStyle ?: SpanStyle()).let { base ->
+                            if (styleWeight != null) base.merge(SpanStyle(fontWeight = styleWeight)) else base
+                        }
 
                         if (currentRichSpan != null) {
                             newRichSpan.parent = currentRichSpan
@@ -493,9 +516,18 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         // Bold is based off fontWeight. Skip the ** markers inside headings since headings
         // already imply bold; emitting ** would produce `# **Title**` which round-trips back to
         // a double-bold span.
-        if (!isHeading && (richSpan.spanStyle.fontWeight?.weight ?: 400) > 400) {
-            markdownOpen += "**"
-            markdownClose += "**"
+        // 字重分档：标准 Bold(700) 用 `**` 兼容通用 markdown；非 700 字重（如 ExtraBold 800）
+        // 改用 HTML `<span style="font-weight:N">` 表达，使字重数值在 markdown 往返中保留
+        // （markdown 的 `**` 只能表达二值粗体，无法承载 700/800 的档位差异）。
+        val fontWeight = richSpan.spanStyle.fontWeight
+        if (!isHeading && fontWeight != null && fontWeight.weight > 400) {
+            if (fontWeight.weight == 700) {
+                markdownOpen += "**"
+                markdownClose += "**"
+            } else {
+                markdownOpen += "<span style=\"font-weight:${fontWeight.weight}\">"
+                markdownClose += "</span>"
+            }
         }
 
         if (richSpan.spanStyle.fontStyle == FontStyle.Italic) {
