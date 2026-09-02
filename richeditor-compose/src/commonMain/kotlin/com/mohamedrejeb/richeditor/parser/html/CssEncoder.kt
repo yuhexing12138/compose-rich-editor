@@ -277,7 +277,9 @@ internal object CssEncoder {
             "700", "bold" -> FontWeight.Bold
             "800", "extrabold" -> FontWeight.ExtraBold
             "900", "black", "bolder" -> FontWeight.Black
-            else -> null
+            // 兜底：支持任意整数字重（如 750），使非整百字重在 markdown/HTML 往返中不丢失
+            // （系统字体可能没有该字面，渲染时会量化到最近可用字面，但存储值需原样保留）。
+            else -> cssFontWeight.toIntOrNull()?.let { w -> FontWeight(w.coerceIn(1, 1000)) }
         }
     }
 
