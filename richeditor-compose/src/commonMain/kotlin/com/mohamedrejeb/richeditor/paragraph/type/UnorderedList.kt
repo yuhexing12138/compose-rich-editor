@@ -89,7 +89,9 @@ internal class UnorderedList private constructor(
     }
 
     private fun getNewParagraphStyle(): ParagraphStyle {
-        val base = (indent * level).toFloat()
+        // base 按 (level - 1) 计算：一级列表贴左缘（App 需求「列表无缩进」，与 OrderedList 同公式），
+        // 二级起每级缩进 indent（App 配 30sp ≈ 两字符）。
+        val base = (indent * (level - 1)).toFloat()
         val prefix = startTextWidth.value
         // End: HTML-style alignment - prefix lives in the indent "gutter". Clamp firstLine
         // at 0 so the prefix stays visible when the indent is smaller than the prefix;

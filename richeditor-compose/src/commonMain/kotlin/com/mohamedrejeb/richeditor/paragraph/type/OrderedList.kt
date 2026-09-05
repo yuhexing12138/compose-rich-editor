@@ -110,7 +110,9 @@ internal class OrderedList private constructor(
     }
 
     private fun getNewParagraphStyle(): ParagraphStyle {
-        val base = (indent * level).toFloat()
+        // base 按 (level - 1) 计算：一级列表贴左缘（App 需求「列表无缩进」，marker 与正文左对齐），
+        // 二级起每级缩进 indent（App 配 30sp ≈ 两字符），供「增加/减少缩进」按钮产生可见层级。
+        val base = (indent * (level - 1)).toFloat()
         val prefix = startTextWidth.value
         // End: HTML-style alignment - prefix lives in the indent "gutter" and dots align
         // vertically. Clamp firstLine at 0 so the prefix stays visible when the indent is

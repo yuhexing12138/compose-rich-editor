@@ -1887,6 +1887,63 @@ public class RichTextState internal constructor(
     }
 
     /**
+     * v2026-09-05（块架构专用）：直接设置当前段落的列表层级与有序编号。
+     *
+     * 块架构下每个 Text 块是独立单段落 state：[increaseListLevel]/[decreaseListLevel]
+     * 依赖「前序兄弟段落」判定（[canIncreaseListLevel]），单段落时恒不满足；而层级若走
+     * markdown 前缀（每级 2 空格）经 setMarkdown 往返，独立块的 ≥4 空格前缀会被
+     * CommonMark 解析为缩进代码块导致层级丢失。层级/编号变更必须走本 API 直接改段落
+     * 类型（[updateParagraphType] 同步换 marker 文本与缩进样式、自动校正光标，
+     * 完全不经 markdown 解析）。
+     *
+     * @param level 目标层级（1 起，coerceAtLeast(1)）。
+     * @param number 有序列表编号（无序列表忽略）。
+     * @param commitHistory 是否写入块内 history（true = 用户操作、可撤销；false =
+     *  程序性重编号/块重建，不产生撤销步）。
+     */
+    public fun setListMarker(
+        level: Int,
+        number: Int = 1,
+        commitHistory: Boolean = true,
+    ) {
+        recordHistory(CommitTrigger.Structural, enabled = commitHistory) {
+            applySetListMarker(level = level, number = number)
+        }
+    }
+
+    /** [setListMarker] 的实际执行（不做历史记录，由调用方决定是否包裹 [recordHistory]）。 */
+    private fun applySetListMarker(level: Int, number: Int) {
+        val paragraphs = getRichParagraphListByTextRange(selection)
+        val paragraph = paragraphs.firstOrNull()
+            ?: richParagraphList.firstOrNull()
+            ?: return
+        val newType = when (val type = paragraph.type) {
+            is OrderedList ->
+                OrderedList(
+                    number = number,
+                    config = config,
+                    startTextWidth = type.startTextWidth,
+                    initialLevel = level.coerceAtLeast(1),
+                    startFrom = type.startFrom,
+                )
+
+            is UnorderedList ->
+                UnorderedList(
+                    config = config,
+                    initialLevel = level.coerceAtLeast(1),
+                )
+
+            else -> return
+        }
+        val newTextFieldValue = updateParagraphType(
+            paragraph = paragraph,
+            newType = newType,
+            textFieldValue = textFieldValue,
+        )
+        updateTextFieldValue(newTextFieldValue)
+    }
+
+    /**
      * Private/Internal methods
      */
 

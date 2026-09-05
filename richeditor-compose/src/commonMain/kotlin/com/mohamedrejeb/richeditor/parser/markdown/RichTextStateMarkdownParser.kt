@@ -154,8 +154,22 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                     if (node.type == MarkdownElementTypes.LIST_ITEM) {
                         currentRichParagraphType = currentRichParagraphType.getNextParagraphType()
 
+                        // v2026-09-05: 列表层级以**源码行首缩进**为准（每级 2 空格，与编码端
+                        // appendParagraphStartText 的约定对称），而非 AST 嵌套深度——
+                        // 孤儿缩进行（如单列表项独立 setMarkdown("  1. b")，无父链使 AST 深度恒为 1）
+                        // 也能保留层级，供块架构（每块单列表项）的层级缩进特性使用。
+                        val sourceIndentLevel = run {
+                            val lineStart = correctedMarkdown.lastIndexOf('\n', node.startOffset)
+                                .let { if (it < 0) 0 else it + 1 }
+                            var spaces = 0
+                            while (lineStart + spaces < correctedMarkdown.length &&
+                                correctedMarkdown[lineStart + spaces] == ' '
+                            ) spaces++
+                            spaces / 2 + 1
+                        }
+
                         if (currentRichParagraphType is ConfigurableListLevel) {
-                            (currentRichParagraphType as ConfigurableListLevel).level = currentListLevel
+                            (currentRichParagraphType as ConfigurableListLevel).level = sourceIndentLevel
                         }
 
                         // Interrupted lists parse as separate list nodes; seed the item
@@ -170,7 +184,7 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                         if (literalNumber != null) {
                             currentRichParagraphType = OrderedList(
                                 number = literalNumber,
-                                initialLevel = currentListLevel,
+                                initialLevel = sourceIndentLevel,
                                 startFrom = literalNumber,
                             )
                         }
