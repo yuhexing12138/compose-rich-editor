@@ -1,9 +1,11 @@
 package com.mohamedrejeb.richeditor.parser.markdown
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastForEach
 import androidx.compose.ui.util.fastForEachIndexed
@@ -32,6 +34,7 @@ import org.intellij.markdown.ast.findChildOfType
 import org.intellij.markdown.ast.getTextInNode
 import org.intellij.markdown.flavours.gfm.GFMElementTypes
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
+import kotlin.math.roundToInt
 
 internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
@@ -326,20 +329,25 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                 currentRichSpan = currentRichSpan?.parent
             },
             onHtmlTag = { tag ->
-                // 从 inline HTML 标签解析 style 属性中的 font-weight（如
-                // `<span style="font-weight:800">`），使非 700 字重经 markdown 往返保留。
-                fun parseInlineStyleFontWeight(raw: String): FontWeight? {
+                /**
+                 * 解析内联 HTML 标签 style 属性里的 CSS 声明，整体转成 [SpanStyle]。
+                 *
+                 * 例：`<span style="font-size:16px;color:#E88A4D;font-weight:800">`。
+                 * 编码侧（[decodeRichSpanToMarkdown]）把 markdown 原生语法无法表达的
+                 * 字号 / 文字颜色 / 非 700 字重写成内联 CSS，这里负责还原。
+                 *
+                 * 复用 [CssEncoder] 现成解析（px/pt/em/rem/% 尺寸、hex 与 rgb/rgba 色值、
+                 * 任意整数字重），不重复实现，避免两边规则漂移。
+                 *
+                 * @return 解析出的 [SpanStyle]；无 style 属性或解析不出任何声明时返回 null。
+                 */
+                fun parseInlineStyleToSpanStyle(raw: String): SpanStyle? {
                     val style = Regex(
                         """style\s*=\s*["']([^"']*)["']""",
                         RegexOption.IGNORE_CASE,
-                    ).find(raw)?.groupValues?.getOrNull(1)?.trim() ?: return null
-                    if (style.isEmpty()) return null
-                    val weightRaw = style.split(";")
-                        .firstOrNull { it.contains("font-weight", ignoreCase = true) }
-                        ?.substringAfter(":", "")
-                        ?.trim()
+                    ).find(raw)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
                         ?: return null
-                    return CssEncoder.parseCssFontWeight(weightRaw)
+                    return CssEncoder.parseCssStyleMapToSpanStyle(CssEncoder.parseCssStyle(style))
                 }
 
                 val tagName = tag
@@ -365,11 +373,18 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                     if (tagName != BrElement) {
                         val currentRichParagraph = richParagraphList.last()
                         val newRichSpan = RichSpan(paragraph = currentRichParagraph)
-                        // 合并 style 中的 font-weight（库原生 onHtmlTag 只按标签名查映射，
-                        // 会丢弃属性，导致非 700 字重在 markdown 行内往返中丢失）。
-                        val styleWeight = parseInlineStyleFontWeight(tag)
-                        newRichSpan.spanStyle = (tagSpanStyle ?: SpanStyle()).let { base ->
-                            if (styleWeight != null) base.merge(SpanStyle(fontWeight = styleWeight)) else base
+                        // 合并 style 属性解析出的完整 SpanStyle（库原生 onHtmlTag 只按标签名查
+                        // 映射，会丢弃属性，导致字号/颜色/非 700 字重在 markdown 往返中丢失）。
+                        // merge 只覆盖 other 中「已指定」的字段，style 里没写的维度保持标签映射值。
+                        val inlineStyle = parseInlineStyleToSpanStyle(tag)
+                        // 合并 style 属性解析出的完整 SpanStyle（库原生 onHtmlTag 只按标签名查
+                        // 映射，会丢弃属性，导致字号/颜色/非 700 字重在 markdown 往返中丢失）。
+                        // merge 只覆盖 other 中「已指定」的字段，style 里没写的维度保持标签映射值。
+                        // inlineStyle 为空（标签无 style 属性，如纯 <b>/<i>）时回落标签映射值。
+                        newRichSpan.spanStyle = if (inlineStyle != null) {
+                            (tagSpanStyle ?: SpanStyle()).merge(inlineStyle)
+                        } else {
+                            tagSpanStyle ?: SpanStyle()
                         }
 
                         if (currentRichSpan != null) {
@@ -513,21 +528,45 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         val markdownOpen = mutableListOf<String>()
         val markdownClose = mutableListOf<String>()
 
+        // ---- 需要以 HTML 内联样式表达的 SpanStyle（markdown 原生语法承载不了的那些）----
+        // markdown 只有二值粗体 `**`、斜体 `*`、删除线 `~~`、下划线 `<u>`，
+        // 无法承载**字号**与**文字颜色**；非 700 字重（如 ExtraBold 800）同理。
+        // 这些统一合并进**同一个** `<span style="...">`：
+        //  - 合并而非嵌套多层 span：解码侧 onHtmlTag 每遇到一个标签就建一个 RichSpan，
+        //    嵌套会产生多余的空 RichSpan，合并可避免；
+        //  - 放在 markdownOpen/markdownClose 的**最外层**（先 open、最后 close）：
+        //    保证 `**text**` 这类标记仍紧贴文字，不被 HTML 标签隔断而失效。
+        //  - 单位：CssEncoder.parseCssSize 只认 px|pt|em|rem|%（**不认 sp**），
+        //    故按库内 CssDecoder.decodeTextUnitToCss 的既有约定把 sp 数值写成 px（1:1）。
+        val cssDeclarations = mutableListOf<String>()
+
         // Bold is based off fontWeight. Skip the ** markers inside headings since headings
         // already imply bold; emitting ** would produce `# **Title**` which round-trips back to
         // a double-bold span.
         // 字重分档：标准 Bold(700) 用 `**` 兼容通用 markdown；非 700 字重（如 ExtraBold 800）
-        // 改用 HTML `<span style="font-weight:N">` 表达，使字重数值在 markdown 往返中保留
-        // （markdown 的 `**` 只能表达二值粗体，无法承载 700/800 的档位差异）。
+        // 走内联 CSS，使字重数值在 markdown 往返中保留。
         val fontWeight = richSpan.spanStyle.fontWeight
-        if (!isHeading && fontWeight != null && fontWeight.weight > 400) {
-            if (fontWeight.weight == 700) {
-                markdownOpen += "**"
-                markdownClose += "**"
-            } else {
-                markdownOpen += "<span style=\"font-weight:${fontWeight.weight}\">"
-                markdownClose += "</span>"
-            }
+        val isStandardBold = fontWeight?.weight == 700
+        if (!isHeading && fontWeight != null && fontWeight.weight > 400 && !isStandardBold) {
+            cssDeclarations += "font-weight:${fontWeight.weight}"
+        }
+
+        if (richSpan.spanStyle.fontSize.isSpecified) {
+            cssDeclarations += "font-size:${richSpan.spanStyle.fontSize.value}px"
+        }
+
+        if (richSpan.spanStyle.color.isSpecified) {
+            cssDeclarations += "color:${encodeColorToCssHex(richSpan.spanStyle.color)}"
+        }
+
+        if (cssDeclarations.isNotEmpty()) {
+            markdownOpen += """<span style="${cssDeclarations.joinToString(";")}">"""
+            markdownClose += "</span>"
+        }
+
+        if (!isHeading && isStandardBold) {
+            markdownOpen += "**"
+            markdownClose += "**"
         }
 
         if (richSpan.spanStyle.fontStyle == FontStyle.Italic) {
@@ -565,6 +604,31 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
             stringBuilder.append(markdownClose.reversed().joinToString(separator = ""))
 
         return stringBuilder.toString()
+    }
+
+    /**
+     * Compose [Color] → CSS 十六进制色值（"#RRGGBB"），供内联 `style="color:..."` 使用。
+     *
+     * **为什么用 hex 而不是 `rgba(...)`**：hex 不含括号与逗号，嵌在 markdown 内联 HTML
+     * 的 style 属性里不会被 `CssEncoder.parseCssStyle`（它按 `;`、`:` 切分）误解析；
+     * 且 `CssEncoder.parseCssColor` 原生支持 6 位 hex，可无损往返。
+     *
+     * **为什么不用 [Color.toArgb]**：该 API 在 KMP common 源码里不可靠，而 red/green/blue
+     * 分量（0..1 Float）是全平台通用的，换算更稳。
+     *
+     * **取舍**：hex 只承载 RGB，不承载 alpha。正文字色均为不透明色（面板产出的也是
+     * "#RRGGBB"），故丢弃 alpha 无实际影响。
+     */
+    private fun encodeColorToCssHex(color: Color): String {
+        val hexDigits = "0123456789ABCDEF"
+
+        /** 单个分量：0..1 Float → 两位大写 hex（越界先夹取，避免极端值产生负数索引）。 */
+        fun component(value: Float): String {
+            val v = (value * 255).roundToInt().coerceIn(0, 255)
+            return "${hexDigits[v shr 4]}${hexDigits[v and 0xF]}"
+        }
+
+        return "#${component(color.red)}${component(color.green)}${component(color.blue)}"
     }
 
     private fun StringBuilder.appendParagraphStartText(paragraph: RichParagraph) {
