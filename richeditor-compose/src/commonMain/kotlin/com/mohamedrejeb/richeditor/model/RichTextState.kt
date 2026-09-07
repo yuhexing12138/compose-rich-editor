@@ -1944,6 +1944,53 @@ public class RichTextState internal constructor(
     }
 
     /**
+     * v2026-09-07（块架构专用）：设置当前段落的**纯文本整段缩进**层级
+     * （[DefaultParagraph.level]，样式 = TextIndent firstLine = restLine，整段左移）。
+     *
+     * 与 [setListMarker] 同款设计：直接改段落类型（[updateParagraphType] 同步样式并
+     * 校正光标），不经 markdown 往返；markdown 持久化由编码端的段首 EM 前缀承载
+     * （见 [com.mohamedrejeb.richeditor.parser.markdown.RichTextStateMarkdownParser]
+     * 的 appendParagraphStartText / PARAGRAPH 解码钩子）。
+     *
+     * 仅作用于纯文本段落（当前 type 为 [DefaultParagraph]）；列表段落 no-op
+     * （列表缩进走 [setListMarker]，两套层级互不干涉）。
+     *
+     * @param level 目标层级（1 = 无缩进，coerceAtLeast(1)；上限由调用方控制）。
+     * @param commitHistory 是否写入块内 history（true = 用户操作、可撤销；false =
+     *  程序性重建，不产生撤销步）。
+     */
+    public fun setParagraphIndent(
+        level: Int,
+        commitHistory: Boolean = true,
+    ) {
+        recordHistory(CommitTrigger.Structural, enabled = commitHistory) {
+            applySetParagraphIndent(level = level)
+        }
+    }
+
+    /** [setParagraphIndent] 的实际执行（不做历史记录，由调用方决定是否包裹 [recordHistory]）。 */
+    private fun applySetParagraphIndent(level: Int) {
+        val paragraphs = getRichParagraphListByTextRange(selection)
+        val paragraph = paragraphs.firstOrNull()
+            ?: richParagraphList.firstOrNull()
+            ?: return
+        if (paragraph.type !is DefaultParagraph)
+            return
+
+        val newLevel = level.coerceAtLeast(1)
+        val currentType = paragraph.type as DefaultParagraph
+        if (newLevel == currentType.level)
+            return
+
+        val newTextFieldValue = updateParagraphType(
+            paragraph = paragraph,
+            newType = DefaultParagraph(initialLevel = newLevel),
+            textFieldValue = textFieldValue,
+        )
+        updateTextFieldValue(newTextFieldValue)
+    }
+
+    /**
      * Private/Internal methods
      */
 

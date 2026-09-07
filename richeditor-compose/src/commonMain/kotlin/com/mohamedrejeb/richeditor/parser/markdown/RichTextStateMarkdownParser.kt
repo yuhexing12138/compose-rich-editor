@@ -48,6 +48,13 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         var currentRichParagraphType: ParagraphType = DefaultParagraph()
         var currentListLevel = 0
 
+        /**
+         * 纯文本整段缩进解码（v2026-09-07）：当前 PARAGRAPH 对应的起始段落 index
+         * （onOpenNode(PARAGRAPH) 时记录、onCloseNode 时消费并复位 -1）。
+         * EM 前缀只出现在源段落首行行首，故只需处理起始段落。
+         */
+        var plainIndentParagraphStartIndex = -1
+
         fun onAddLineBreak() {
             val lastParagraph = richParagraphList.lastOrNull()
             val beforeLastParagraph = richParagraphList.getOrNull(richParagraphList.lastIndex - 1)
@@ -132,6 +139,15 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
                 if (node.type == MarkdownElementTypes.LIST_ITEM) {
                     currentListLevel++
+                }
+
+                /**
+                 * 纯文本整段缩进解码（v2026-09-07）：记录 PARAGRAPH 对应的起始段落 index，
+                 * 供 PARAGRAPH 关闭时剥段首 EM 编码前缀并还原 [DefaultParagraph.level]
+                 * （见 [PLAIN_INDENT_CHAR] 与 onCloseNode 的 PARAGRAPH 分支）。
+                 */
+                if (node.type == MarkdownElementTypes.PARAGRAPH) {
+                    plainIndentParagraphStartIndex = richParagraphList.lastIndex
                 }
 
                 val tagSpanStyle = markdownElementsSpanStyleEncodeMap[node.type]
@@ -280,6 +296,38 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
                 if (node.type == MarkdownElementTypes.LIST_ITEM) {
                     currentListLevel--
+                }
+
+                /**
+                 * 纯文本整段缩进解码（v2026-09-07）：PARAGRAPH 关闭时把段首 EM 编码前缀
+                 * （[PLAIN_INDENT_CHAR]，每级 [PLAIN_INDENT_STEP] 个，由编码端
+                 * [appendParagraphStartText] 输出）从首个文本 span 中剥除，并还原为
+                 * [DefaultParagraph.level] 缩进属性（整段左移）。
+                 *
+                 * - 仅处理 [DefaultParagraph] 段落（列表/标题等有自己的编码体系，互斥）；
+                 * - EM 前缀是连续源文本前缀，必落在首个非空文本 span 开头，单 span 剥除安全；
+                 * - 剥后 span 变空则从树上移除（纯缩进空段落）；level=1 时无前缀、无操作。
+                 */
+                if (node.type == MarkdownElementTypes.PARAGRAPH && plainIndentParagraphStartIndex >= 0) {
+                    val paragraph = richParagraphList.getOrNull(plainIndentParagraphStartIndex)
+                    plainIndentParagraphStartIndex = -1
+                    if (paragraph != null && paragraph.type is DefaultParagraph) {
+                        val firstTextSpan = paragraph.findFirstTextSpan()
+                        val leadingChars = firstTextSpan?.text?.takeWhile { it == PLAIN_INDENT_CHAR }?.length ?: 0
+                        if (firstTextSpan != null && leadingChars >= PLAIN_INDENT_STEP) {
+                            firstTextSpan.text = firstTextSpan.text.substring(leadingChars)
+                            if (firstTextSpan.text.isEmpty()) {
+                                // 纯缩进空段落：剥空前缀后 span 为空，从树上移除保持结构干净
+                                val parent = firstTextSpan.parent
+                                if (parent != null)
+                                    parent.children.remove(firstTextSpan)
+                                else
+                                    paragraph.children.remove(firstTextSpan)
+                            }
+                            val level = leadingChars / PLAIN_INDENT_STEP + 1
+                            (paragraph.type as DefaultParagraph).level = level
+                        }
+                    }
                 }
 
                 // Remove empty spans
@@ -645,6 +693,32 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         return "#${component(color.red)}${component(color.green)}${component(color.blue)}"
     }
 
+    /**
+     * 纯文本整段缩进（v2026-09-07）的 markdown 编码载体：全角空格 U+2003（EM SPACE），
+     * 每级 [PLAIN_INDENT_STEP] 个，见 [appendParagraphStartText] 与 PARAGRAPH 解码钩子。
+     * 选 U+2003 是因为它是普通文本字符——CommonMark 不把它当缩进空格（不会因
+     * ≥4 字符落入缩进代码块），可无损往返。
+     */
+    private const val PLAIN_INDENT_CHAR = '\u2003'
+
+    /** 纯文本缩进步长：每个缩进层级对应的段首 EM SPACE 个数（≈ 两字符宽） */
+    private const val PLAIN_INDENT_STEP = 2
+
+    /**
+     * 深度优先找段落树中第一个非空文本 span（EM 编码前缀是连续源文本前缀，
+     * 必落在该 span 开头）。全空树返回 null。
+     */
+    private fun RichSpan.findFirstTextSpanRecursive(): RichSpan? {
+        if (text.isNotEmpty()) return this
+        children.fastForEach { child ->
+            child.findFirstTextSpanRecursive()?.let { return it }
+        }
+        return null
+    }
+
+    private fun RichParagraph.findFirstTextSpan(): RichSpan? =
+        children.firstNotNullOfOrNull { it.findFirstTextSpanRecursive() }
+
     private fun StringBuilder.appendParagraphStartText(paragraph: RichParagraph) {
         when (val type = paragraph.type) {
             is OrderedList ->
@@ -652,6 +726,15 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
             is UnorderedList ->
                 append("  ".repeat(type.level - 1) + "- ")
+
+            /**
+             * 纯文本整段缩进（v2026-09-07）：level>1 时输出段首 EM 前缀（每级 2 个），
+             * 供解码端（[encode] 的 PARAGRAPH 关闭钩子）还原 [DefaultParagraph.level]。
+             * level=1（无缩进）不输出前缀，与旧行为完全一致。
+             */
+            is DefaultParagraph ->
+                if (type.level > 1)
+                    append(PLAIN_INDENT_CHAR.toString().repeat(PLAIN_INDENT_STEP * (type.level - 1)))
 
             else ->
                 Unit
