@@ -176,6 +176,17 @@ public class RichTextState internal constructor(
      * before the first paint, so toggle-list, setMarkdown, setHtml, and paste paths render
      * the correct `TextIndent` on the very first frame instead of relying on the
      * onTextLayout self-correction (which causes a one-frame "indent jump" flicker).
+     *
+     * **进程级共享缓存（v2026-09-08 App 需求）**：本字段仍为本 state 的快路径；
+     * [adjustRichParagraphLayout] 测量后**同时**写入 [Companion.SharedStartTextWidthCache]，
+     * [applyCachedStartTextWidths] 在本缓存 miss 时回查共享缓存。
+     *
+     * **为什么需要共享**：App 的块架构（每块一个 [RichTextState]）在回车拆块/撤销/
+     * 重建时会**新建 state**——per-state 缓存随旧实例一起丢弃，新块首帧
+     * `startTextWidth = 0.sp`，`TextIndent(firstLine = base - 0)` 使 marker+文本整体
+     * 右移一个 marker 宽度，测量回写后才回落（用户可见的「换行时向右跳一下」）。
+     * 共享缓存让新 state 首帧即命中同 prefix（同字号/字体）的已测宽度。
+     * key 维度见 [sharedStartTextWidthKey]。
      */
     internal val startTextWidthCache: MutableMap<String, TextUnit> = mutableMapOf()
 
@@ -4862,6 +4873,11 @@ public class RichTextState internal constructor(
                     // paragraphs with the same prefix can render correctly on the first
                     // frame instead of relying on this self-correction pass.
                     startTextWidthCache[paragraphType.startText] = distanceSp
+                    // v2026-09-08：同步写入进程级共享缓存（key 带字号/字体维度），
+                    // 供拆块/重建新建的 state 首帧预热（见 applyCachedStartTextWidths）。
+                    SharedStartTextWidthCache[
+                        sharedStartTextWidthKey(richParagraph.startMarkerStyleKey(), paragraphType.startText)
+                    ] = distanceSp
                 }
             }
         }
@@ -4876,14 +4892,21 @@ public class RichTextState internal constructor(
      * same prefix string. Called immediately before each render path rebuilds the
      * annotated string so the first paint of a fresh list paragraph picks up the
      * correct `TextIndent` instead of one frame at the indent origin.
+     *
+     * v2026-09-08：本 state 缓存 miss 时回查进程级 [Companion.SharedStartTextWidthCache]
+     * （跨 state 共享，块架构拆块/重建新建 state 时首帧即命中，消除右跳闪烁）。
      */
     private fun applyCachedStartTextWidths() {
-        if (startTextWidthCache.isEmpty()) return
+        if (startTextWidthCache.isEmpty() && Companion.SharedStartTextWidthCache.isEmpty()) return
         richParagraphList.fastForEach { paragraph ->
             val type = paragraph.type
             if (type is ConfigurableStartTextWidth && type.startTextWidth == 0.sp) {
-                startTextWidthCache[type.startText]?.let { cached ->
-                    type.startTextWidth = cached
+                val cached = startTextWidthCache[type.startText]
+                    ?: Companion.SharedStartTextWidthCache[
+                        sharedStartTextWidthKey(paragraph.startMarkerStyleKey(), type.startText)
+                    ]
+                cached?.let { value ->
+                    type.startTextWidth = value
                 }
             }
         }
@@ -6024,6 +6047,18 @@ public class RichTextState internal constructor(
     }
 
     public companion object {
+        /**
+         * 进程级 marker 宽度缓存（v2026-09-08 App 需求，见 [RichTextState.startTextWidthCache]）：
+         * key = `"fontSizeSp|fontFamily|prefix"`（维度见 [sharedStartTextWidthKey] 与
+         * [startMarkerStyleKey]）。跨 [RichTextState] 共享——块架构（每块一个 state）在
+         * 回车拆块/撤销/重建时会新建 state，共享缓存让新 state 的列表段落首帧即命中
+         * 同形态 marker 的已测宽度，消除「换行后列表行向右跳一下再回位」的一帧闪烁。
+         *
+         * 仅做首帧预热近似：字号/字体不一致时 miss（回退布局自校正），不会渲染错值。
+         * 条目数 = prefix 种类 × 字号/字体组合，量级极小，无清理必要。
+         */
+        internal val SharedStartTextWidthCache: MutableMap<String, TextUnit> = mutableMapOf()
+
         public val Saver: Saver<RichTextState, *> = listSaver(
             save = {
                 listOf(
@@ -6049,3 +6084,32 @@ public class RichTextState internal constructor(
         )
     }
 }
+
+/**
+ * 段落 marker 样式 key 的样式维度（v2026-09-08 共享缓存）：深度优先找首个非空文本
+ * span，取其 fontSize（sp 值，未指定记 0）与 fontFamily（toString，未指定记 "-"）。
+ *
+ * marker 渲染宽度由 prefix × fontSize × fontFamily 决定（ListMarkerStyleBehavior
+ * .InheritFromText 下 marker 继承首段文本样式）；letterSpacing 的块间差异对短
+ * prefix 影响极小，不进 key——样式不一致时 miss、回退布局自校正（仅一帧），
+ * 不会渲染错值。
+ */
+private fun RichParagraph.startMarkerStyleKey(): String {
+    fun RichSpan.firstTextSpan(): RichSpan? {
+        if (text.isNotEmpty()) return this
+        for (child in children) {
+            child.firstTextSpan()?.let { return it }
+        }
+        return null
+    }
+
+    val span = children.firstNotNullOfOrNull { it.firstTextSpan() }
+    val fontSize = span?.spanStyle?.fontSize
+    val fontSizePart = if (fontSize != null && fontSize != TextUnit.Unspecified) "${fontSize.value}" else "0"
+    val family = span?.spanStyle?.fontFamily
+    val familyPart = family?.toString() ?: "-"
+    return "$fontSizePart|$familyPart"
+}
+
+/** 进程级 marker 宽度共享缓存的 key：样式维度 + prefix（见 [RichTextState.Companion.SharedStartTextWidthCache]） */
+private fun sharedStartTextWidthKey(styleKey: String, prefix: String): String = "$styleKey|$prefix"

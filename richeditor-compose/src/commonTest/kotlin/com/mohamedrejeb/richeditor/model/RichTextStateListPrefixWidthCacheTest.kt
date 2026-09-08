@@ -114,4 +114,39 @@ class RichTextStateListPrefixWidthCacheTest {
         require(type is ConfigurableStartTextWidth)
         assertEquals(11.sp, type.startTextWidth)
     }
+
+    /**
+     * v2026-09-08 App 需求：进程级共享缓存让**新建 state**（块架构拆块/重建场景）
+     * 的列表段首帧即拿到同 prefix 的已测宽度，消除「换行后列表行向右跳一下再回位」
+     * 的一帧闪烁。key 带样式维度（无样式段落 = "0|-|prefix"）。
+     */
+    @Test
+    fun sharedCache_prePopulatesFreshStateOnFirstFrame() {
+        // 模拟 state A 测量后 adjustRichParagraphLayout 的共享缓存写入。
+        RichTextState.SharedStartTextWidthCache["0|-|• "] = 11.sp
+        try {
+            // state B：全新 state，含同 prefix、无样式的列表段（拆块重建后的新块形态）。
+            val stateB = RichTextState(
+                initialRichParagraphList = listOf(
+                    RichParagraph(type = UnorderedList(initialLevel = 1)).also {
+                        it.children.add(RichSpan(text = "共享", paragraph = it))
+                    },
+                )
+            )
+
+            // 首次渲染重建触发 applyCachedStartTextWidths → 共享缓存命中。
+            stateB.annotatedString
+
+            val type = stateB.richParagraphList[0].type
+            require(type is ConfigurableStartTextWidth)
+            assertEquals(
+                expected = 11.sp,
+                actual = type.startTextWidth,
+                message = "Fresh state should pre-fill the prefix width from the process-wide cache",
+            )
+        } finally {
+            // 共享缓存是进程级的，清理避免影响其他用例。
+            RichTextState.SharedStartTextWidthCache.clear()
+        }
+    }
 }
