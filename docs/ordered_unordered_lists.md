@@ -80,7 +80,7 @@ richTextState.config.orderedListStyleType = OrderedListStyleType.Multiple(
 You can customize the style of unordered lists using different bullet types:
 
 ```kotlin
-// Set unordered list style type
+// Set unordered list style type (same marker on every nesting level)
 richTextState.config.unorderedListStyleType = UnorderedListStyleType.Disc    // •
 richTextState.config.unorderedListStyleType = UnorderedListStyleType.Circle  // ◦
 richTextState.config.unorderedListStyleType = UnorderedListStyleType.Square  // ▪
@@ -92,6 +92,10 @@ richTextState.config.unorderedListStyleType = UnorderedListStyleType.from(
     "▪"   // Third level
 )
 ```
+
+> Default: `UnorderedListStyleType.Disc` (a single `•`), so **indenting an item only moves it
+> right — the bullet stays the same black dot on every level**. Pass several prefixes to
+> `from(...)` if you want the marker to change with the nesting level.
 
 ## List Indentation
 
@@ -176,10 +180,8 @@ By default, the Rich Text Editor uses these configurations:
   - First level: `Decimal` (1, 2, 3, ...)
   - Second level: `LowerRoman` (i, ii, iii, ...)
   - Third level: `LowerAlpha` (a, b, c, ...)
-- Unordered List Style: `UnorderedListStyleType.from` with:
-  - First level: `•` (bullet)
-  - Second level: `◦` (circle)
-  - Third level: `▪` (square)
+- Unordered List Style: `UnorderedListStyleType.from("•")` — a single bullet, so every
+  nesting level renders the same `•` (indentation only moves the item)
 - List Indentation: 38
 - List Prefix Alignment: `ListPrefixAlignment.End` (HTML-style, dots aligned)
 - List Marker Style: `ListMarkerStyleBehavior.InheritFromText`
@@ -226,9 +228,9 @@ When working with lists:
 #### Unordered List Example
 ```
 • First level item
-  ◦ Second level item
-    ▪ Third level item
-  ◦ Another second level
+  • Second level item
+    • Third level item
+  • Another second level
 • Back to first level
 ```
 

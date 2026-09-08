@@ -110,6 +110,14 @@ internal class UnorderedList private constructor(
     override var startRichSpan: RichSpan =
         getNewStartRichSpan()
 
+    /**
+     * 生成本层级的 marker span（文本 = 符号 + 一个空格）。
+     *
+     * 符号取 `styleType.prefixes[level - 1]`，索引夹在表长内——**默认符号表只有一项
+     * `•`**（[com.mohamedrejeb.richeditor.model.DefaultUnorderedListStyleType]），故任意
+     * 层级都得到同一个黑色圆点：缩进只移动位置，标识不随层级变化（App 需求 v2026-09-08）。
+     * 配置了多符号表时仍按层级轮换（层级超出表长取末项）。
+     */
     @OptIn(ExperimentalRichTextApi::class)
     private fun getNewStartRichSpan(textRange: TextRange = TextRange(0)): RichSpan {
         val prefixIndex =

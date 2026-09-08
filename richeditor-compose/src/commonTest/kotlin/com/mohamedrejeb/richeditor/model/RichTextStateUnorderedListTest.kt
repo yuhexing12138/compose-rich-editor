@@ -18,11 +18,47 @@ class RichTextStateUnorderedListTest {
     fun testDefaultUnorderedListStyleType() {
         val richTextState = RichTextState()
 
-        // Default style type should be "•", "◦", "▪"
+        // Default style type is a single "•": every nesting level uses the same black bullet
         assertEquals(
-            UnorderedListStyleType.from("•", "◦", "▪"),
+            UnorderedListStyleType.from("•"),
             richTextState.config.unorderedListStyleType
         )
+    }
+
+    @Test
+    fun testDefaultStyleTypeKeepsSameBulletOnAllLevels() {
+        val richTextState = RichTextState(
+            initialRichParagraphList = listOf(
+                RichParagraph(
+                    type = UnorderedList(
+                        initialLevel = 1
+                    ),
+                ).also {
+                    it.children.add(
+                        RichSpan(
+                            text = "First level",
+                            paragraph = it,
+                        ),
+                    )
+                },
+                RichParagraph(
+                    type = UnorderedList(
+                        initialLevel = 3
+                    ),
+                ).also {
+                    it.children.add(
+                        RichSpan(
+                            text = "Third level",
+                            paragraph = it,
+                        ),
+                    )
+                }
+            )
+        )
+
+        // Indenting must not change the marker: level 1 and level 3 both render "• "
+        assertEquals("• ", richTextState.richParagraphList[0].type.startRichSpan.text)
+        assertEquals("• ", richTextState.richParagraphList[1].type.startRichSpan.text)
     }
 
     @Test
@@ -80,6 +116,12 @@ class RichTextStateUnorderedListTest {
                 }
             )
         )
+
+        // Default is a single bullet now, so opt into a multi-prefix table to test level mapping
+        richTextState.config.unorderedListStyleType =
+            UnorderedListStyleType.from("•", "◦", "▪")
+        // 触发一次刷新：段落的 styleType 由 type.getStyle(config) 同步（annotatedString 读取时执行）
+        richTextState.annotatedString
 
         // Verify that each level uses the correct prefix
         val firstParagraph = richTextState.richParagraphList[0]
@@ -145,6 +187,12 @@ class RichTextStateUnorderedListTest {
                 }
             )
         )
+
+        // Default is a single bullet now, so opt into a multi-prefix table to test the clamp
+        richTextState.config.unorderedListStyleType =
+            UnorderedListStyleType.from("•", "◦", "▪")
+        // 触发一次刷新：段落的 styleType 由 type.getStyle(config) 同步
+        richTextState.annotatedString
 
         // Should use the last available prefix when nesting level exceeds prefix list length
         val paragraph = richTextState.richParagraphList[3]

@@ -88,7 +88,8 @@ public class RichTextConfig internal constructor(
      *
      * If the list is nested more than the number of prefixes, the last prefix is used.
      *
-     * The default prefixes are `•`, `◦`, and `▪`.
+     * The default is a single `•` prefix, so **every nesting level uses the same black
+     * bullet**（App 需求：缩进只改变位置，列表标识不变）。传多个前缀可恢复「按层级换符号」。
      */
     public var unorderedListStyleType: UnorderedListStyleType = DefaultUnorderedListStyleType
         set(value) {
@@ -160,8 +161,15 @@ public class RichTextConfig internal constructor(
 
 internal const val DefaultListIndent = 38
 
+/**
+ * 无序列表默认符号表（v2026-09-08 App 定制）：**只含一个黑色圆点 `•`**。
+ *
+ * [UnorderedList] 取符号用 `prefixes[(level - 1).coerceIn(prefixes.indices)]`——单元素表
+ * 让任意层级都落到同一符号，即「缩进只移动位置，标识恒为黑色圆点」（此前默认
+ * `•`/`◦`/`▪` 三符号轮换，缩进后 marker 会变空心圈、黑方块）。
+ */
 internal val DefaultUnorderedListStyleType =
-    UnorderedListStyleType.from("•", "◦", "▪")
+    UnorderedListStyleType.from("•")
 
 internal val DefaultOrderedListStyleType: OrderedListStyleType =
     OrderedListStyleType.Multiple(
