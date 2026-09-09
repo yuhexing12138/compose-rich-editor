@@ -2391,7 +2391,27 @@ public class RichTextState internal constructor(
         }
     }
 
+    /**
+     * 【临时诊断探针】把当前调用堆栈压成单行（定位"选区被改写"后移除）。
+     * 用 " <- " 拼接保证 println 单行输出，logcat 的 findstr/grep 过滤不丢帧。
+     */
+    private fun callerTrace(): String =
+        Throwable().stackTraceToString()
+            .lines()
+            .drop(1)
+            .take(16)
+            .joinToString(" <- ") { it.trim() }
+
     internal fun onTextFieldValueChange(newTextFieldValue: TextFieldValue) {
+        // 【临时诊断探针】选区来源追踪（定位"点全选后选区被改写回折叠"，定位后移除）。
+        // 仅在选区变化时打印；调用堆栈直接指认发起来源（Compose 手势 / IME / 库内部）。
+        if (newTextFieldValue.selection != textFieldValue.selection) {
+            println(
+                "CorgiSelTrace| onValueChangeEntry sel=${newTextFieldValue.selection} " +
+                    "old=${textFieldValue.selection} textLen=${newTextFieldValue.text.length} | " +
+                    callerTrace()
+            )
+        }
         // Classify the change for history before any mutation happens.
         val pendingHtml = pendingClipboardHtml
         val isPaste = pendingHtml != null &&
@@ -2579,6 +2599,15 @@ public class RichTextState internal constructor(
      * @param newTextFieldValue the new text field value.
      */
     private fun updateTextFieldValue(newTextFieldValue: TextFieldValue = tempTextFieldValue) {
+        // 【临时诊断探针】选区最终写入口径（所有 selection 写入必经此处，定位后移除）。
+        // 与 onValueChangeEntry 成对对照：入口值与写入值不同 ⇒ 库内中间环节改写了选区。
+        if (newTextFieldValue.selection != textFieldValue.selection) {
+            println(
+                "CorgiSelTrace| updateTextFieldValue sel=${newTextFieldValue.selection} " +
+                    "old=${textFieldValue.selection} textLen=${newTextFieldValue.text.length} | " +
+                    callerTrace()
+            )
+        }
         tempTextFieldValue = newTextFieldValue
 
         if (!singleParagraphMode) {

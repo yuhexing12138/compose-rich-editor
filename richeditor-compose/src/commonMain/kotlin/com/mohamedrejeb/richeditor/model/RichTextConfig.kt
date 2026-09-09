@@ -9,35 +9,64 @@ import com.mohamedrejeb.richeditor.paragraph.type.ListPrefixAlignment
 import com.mohamedrejeb.richeditor.paragraph.type.OrderedListStyleType
 import com.mohamedrejeb.richeditor.paragraph.type.UnorderedListStyleType
 
+/**
+ * Editor configuration.
+ *
+ * v2026-09-09 全选塌缩修复：**所有带副作用的 setter 都加了值守卫**
+ * （`if (field == value) return`）。原因：setter 内的 `updateText()` 会触发
+ * [com.mohamedrejeb.richeditor.model.RichTextState] 的全量重建
+ * （`updateRichParagraphList`），而重建会把 selection **折叠为单光标**
+ * （`TextRange(selection.min)`，见 updateRichParagraphList 尾部的
+ * `textFieldValue = TextFieldValue(selection = TextRange(selectionIndex))`）。
+ *
+ * 宿主在**组合期**设置 config 是常见写法（每次重组都会重新执行），例如：
+ * ```
+ * val state = rememberRichTextState()
+ * state.config.listIndent = 0   // 每次重组都执行
+ * ```
+ * 没有守卫时：用户全选 (0,len) → 选区写入触发下一帧重组 → 组合期又执行到
+ * 这行 config 设置 → 两次全量重建 → 选区被打回 (0,0)——表现为"点全选后
+ * 整段不高亮、光标跳到最左侧"。
+ */
 public class RichTextConfig internal constructor(
     private val updateText: () -> Unit,
 ) {
     public var linkColor: Color = Color.Blue
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
 
     public var linkTextDecoration: TextDecoration = TextDecoration.Underline
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
 
     public var codeSpanColor: Color = Color.Unspecified
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
 
     public var codeSpanBackgroundColor: Color = Color.Transparent
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
 
     public var codeSpanStrokeColor: Color = Color.LightGray
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
@@ -47,6 +76,8 @@ public class RichTextConfig internal constructor(
      */
     public var orderedListIndent: Int = DefaultListIndent
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
@@ -56,6 +87,8 @@ public class RichTextConfig internal constructor(
      */
     public var unorderedListIndent: Int = DefaultListIndent
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
@@ -73,6 +106,9 @@ public class RichTextConfig internal constructor(
             return field
         }
         set(value) {
+            /** 本 setter 不直接重建（updateText 由下方 ordered/unordered 的 setter 触发）；
+             *  两者的值守卫保证：值相同时重复设置本属性不再产生任何副作用。 */
+            if (field == value) return
             field = value
             orderedListIndent = value
             unorderedListIndent = value
@@ -93,12 +129,16 @@ public class RichTextConfig internal constructor(
      */
     public var unorderedListStyleType: UnorderedListStyleType = DefaultUnorderedListStyleType
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
 
     public var orderedListStyleType: OrderedListStyleType = DefaultOrderedListStyleType
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
@@ -118,6 +158,8 @@ public class RichTextConfig internal constructor(
     @ExperimentalRichTextApi
     public var listMarkerStyleBehavior: ListMarkerStyleBehavior = ListMarkerStyleBehavior.InheritFromText
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
@@ -136,6 +178,8 @@ public class RichTextConfig internal constructor(
     @ExperimentalRichTextApi
     public var listPrefixAlignment: ListPrefixAlignment = ListPrefixAlignment.End
         set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
             field = value
             updateText()
         }
