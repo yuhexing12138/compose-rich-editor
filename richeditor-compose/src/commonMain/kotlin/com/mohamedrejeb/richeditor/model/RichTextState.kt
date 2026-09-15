@@ -3060,21 +3060,21 @@ public class RichTextState internal constructor(
      */
     internal fun updateAnnotatedString(newTextFieldValue: TextFieldValue = textFieldValue) {
         /**
-         * v2026-09-15：`\n` 在文本层**替换为占位空格**（段落分隔的载体）。
+         * v2026-09-15 实验（方案 D' 一致性修正）：**保留 `\n`**（不替换）。
          *
-         * 占位空格的代价：它使"上一段的行尾 offset"落到下一段首字符的视觉位置上，
-         * 多段落块（列表 / 任务列表）的选择手柄拖到行尾会 clamp 到下一行行首（跳行）
-         * ——实测矩阵中已确认这是**当前架构下的已知限制**（详见
-         * `isSoftLineBreakBlock` 的 KDoc：手柄行尾归属与复选框行粒度不可兼得）。
+         * 为什么再试：此前"段间 `\n`"实验失败（空行 ❌）有一个未排查的干扰因素——
+         * **`newText` 与 `annotatedString.text` 不一致**（newText 是占位空格版、
+         * annotatedString 含 `\n`，而 `OffsetMapping.Identity` 向 Compose 声明两者
+         * 一致）。一致性破坏本身就可能让 BasicTextField 的排版异常。
          *
-         * 不可用替代：保留 `\n`（与段落边界叠加产生空行 ❌）、ZWSP（手柄跳行 ❌）、
-         * 不写（offset 重合跳行 ❌）。
+         * 本轮修正为两者**同步含 `\n`**（段间 `append(newText[index])` 取原字符），
+         * isolated 验证「段落 range 含 `\n` + 边界」在 BasicTextField 下的真实行为
+         * —— Compose 官方 `Text` 示例（同结构）为单次换行。
+         *
+         * 若仍出现空行：则确认 BasicTextField 环境下 range 含 `\n` 必双重换行，
+         * 该路线终结，需转向其它承载方式。
          */
-        val newText =
-            if (singleParagraphMode)
-                newTextFieldValue.text
-            else
-                newTextFieldValue.text.replace('\n', ' ')
+        val newText = newTextFieldValue.text
 
         val newStyledRichSpanList = mutableListOf<RichSpan>()
 
@@ -3713,7 +3713,7 @@ public class RichTextState internal constructor(
     /**
      * Serializes the current [richParagraphList] to the plain text exactly as
      * [updateAnnotatedString] will emit it: each paragraph's list prefix followed by
-     * its span tree's text, with a single space separating paragraphs.
+     * its span tree's text, with a newline (`\n`) separating paragraphs.
      */
     private fun computeTextFromTree(): String = buildString {
         fun appendSpanText(richSpan: RichSpan) {
@@ -3725,8 +3725,8 @@ public class RichTextState internal constructor(
             append(paragraph.type.startRichSpan.text)
             paragraph.children.fastForEach { appendSpanText(it) }
             if (!singleParagraphMode && index != richParagraphList.lastIndex) {
-                /** v2026-09-15 定稿：与 [updateAnnotatedString] 一致，段落间用占位空格 */
-                append(' ')
+                /** v2026-09-15 实验：与 [updateAnnotatedString] 一致，段落间用真实 `\n` */
+                append('\n')
             }
         }
     }
