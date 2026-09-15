@@ -512,7 +512,7 @@ public interface RichSpanStyle {
      * **几何约定**：尺寸用 [TextUnit]（sp），与
      * [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的 `TextIndent` 预留
      * 宽度（即 `startTextWidth`）保持同一单位体系——段落 marker 被 `TextIndent`
-     * 推到「[size] + [gap]」之后，勾选框就画在 marker 左侧这段预留区里。
+     * 推到「[boxSize] + [gap]」之后，勾选框就画在 marker 左侧这段预留区里。
      *
      * ⚠️ 边长参数命名为 `boxSize` 而**不是** `size`：`DrawScope` 自身有 `size: Size`
      * 成员，而 `DrawScope.drawCustomStyle` 函数体里**扩展接收者优先于派发接收者**，

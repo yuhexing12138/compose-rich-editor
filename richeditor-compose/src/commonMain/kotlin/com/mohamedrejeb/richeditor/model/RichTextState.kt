@@ -1697,6 +1697,11 @@ public class RichTextState internal constructor(
      * 与 [addUnorderedList] 同款：直接改段落类型（[updateParagraphType] 会同步 marker
      * 文本、缩进样式并自动校正光标），markdown 持久化由 `- [ ] ` 前缀承载。
      *
+     * ⚠️ 命名必须是 `addTaskList` 而**不能**是 `setTaskList`：本类有 `isTaskList`
+     * 状态属性，其 JVM setter 签名恰好是 `setTaskList(Z)V`，同名函数会报
+     * **Platform declaration clash**（源码层合法、字节码层撞车）。既有 API 采用
+     * `addUnorderedList` / `removeUnorderedList` 命名即出于同一考虑。
+     *
      * 语义细节：
      * - 新加的任务列表项一律**未勾选**（复选框的自然默认值）；
      * - 原段落若已带列表层级（实现 [ConfigurableListLevel]），层级随迁，保持缩进观感；
@@ -1704,7 +1709,7 @@ public class RichTextState internal constructor(
      *
      * @param commitHistory 是否写入块内 history（true = 用户操作、可撤销）。
      */
-    public fun setTaskList(commitHistory: Boolean = true) {
+    public fun addTaskList(commitHistory: Boolean = true) {
         recordHistory(CommitTrigger.Structural, enabled = commitHistory) {
             val paragraphs = getRichParagraphListByTextRange(selection)
 
@@ -1755,7 +1760,7 @@ public class RichTextState internal constructor(
         if (firstParagraphIsTaskList) {
             removeTaskList(commitHistory = commitHistory)
         } else {
-            setTaskList(commitHistory = commitHistory)
+            addTaskList(commitHistory = commitHistory)
         }
     }
 
