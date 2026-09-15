@@ -171,7 +171,7 @@ internal class TaskList private constructor(
         )
         richSpan.richSpanStyle = RichSpanStyle.CheckBox(
             checked = checked,
-            size = checkBoxSize,
+            boxSize = checkBoxSize,
             gap = checkBoxGap,
             cornerRadius = checkBoxCornerRadius,
             strokeWidth = checkBoxStrokeWidth,

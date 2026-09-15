@@ -1750,9 +1750,9 @@ public class RichTextState internal constructor(
      */
     public fun toggleTaskList(commitHistory: Boolean = true) {
         val paragraphs = getRichParagraphListByTextRange(selection)
-        val isTaskList = paragraphs.firstOrNull()?.type is TaskList
+        val firstParagraphIsTaskList = paragraphs.firstOrNull()?.type is TaskList
 
-        if (isTaskList) {
+        if (firstParagraphIsTaskList) {
             removeTaskList(commitHistory = commitHistory)
         } else {
             setTaskList(commitHistory = commitHistory)

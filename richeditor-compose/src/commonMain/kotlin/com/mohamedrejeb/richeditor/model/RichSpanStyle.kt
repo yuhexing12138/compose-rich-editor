@@ -514,8 +514,12 @@ public interface RichSpanStyle {
      * 宽度（即 `startTextWidth`）保持同一单位体系——段落 marker 被 `TextIndent`
      * 推到「[size] + [gap]」之后，勾选框就画在 marker 左侧这段预留区里。
      *
+     * ⚠️ 边长参数命名为 `boxSize` 而**不是** `size`：`DrawScope` 自身有 `size: Size`
+     * 成员，而 `DrawScope.drawCustomStyle` 函数体里**扩展接收者优先于派发接收者**，
+     * 写 `size` 会被解析成 `DrawScope.size`（编译报 `Size.toPx()` 不存在）。
+     *
      * @param checked 勾选态。
-     * @param size 方框边长（sp）。
+     * @param boxSize 方框边长（sp）。
      * @param gap 勾选框与正文之间的间距（sp）。
      * @param cornerRadius 方框圆角。
      * @param strokeWidth 未勾选态描边宽度。
@@ -526,7 +530,7 @@ public interface RichSpanStyle {
      */
     public class CheckBox(
         public val checked: Boolean,
-        private val size: TextUnit = DefaultTaskListCheckBoxSize,
+        private val boxSize: TextUnit = DefaultTaskListCheckBoxSize,
         private val gap: TextUnit = DefaultTaskListCheckBoxGap,
         private val cornerRadius: TextUnit = DefaultTaskListCheckBoxCornerRadius,
         private val strokeWidth: TextUnit = DefaultTaskListCheckBoxStrokeWidth,
@@ -562,13 +566,13 @@ public interface RichSpanStyle {
                 flattenForFullParagraphs = false,
             ).firstOrNull() ?: return
 
-            val side = size.toPx()
+            val side = boxSize.toPx()
             /**
              * marker 已被 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的
-             * TextIndent 推到「[size] + [gap]」之后，故勾选框画在 marker 左侧这段
+             * TextIndent 推到「[boxSize] + [gap]」之后，故勾选框画在 marker 左侧这段
              * 预留区里：左缘 = marker 左缘 - 预留宽度。
              */
-            val reserved = (size + gap).toPx()
+            val reserved = side + gap.toPx()
             val left = box.left - reserved + startPadding
             /** 与 marker 所在行垂直居中（box 即该行的行盒） */
             val top = box.top + topPadding + (box.height - side) / 2f
@@ -582,10 +586,10 @@ public interface RichSpanStyle {
                         top = top,
                         right = left + side,
                         bottom = top + side,
-                        topLeft = radius,
-                        topRight = radius,
-                        bottomRight = radius,
-                        bottomLeft = radius,
+                        topLeftCornerRadius = radius,
+                        topRightCornerRadius = radius,
+                        bottomRightCornerRadius = radius,
+                        bottomLeftCornerRadius = radius,
                     )
                 )
             }
@@ -623,7 +627,7 @@ public interface RichSpanStyle {
             if (other !is CheckBox) return false
 
             return checked == other.checked &&
-                size == other.size &&
+                boxSize == other.boxSize &&
                 gap == other.gap &&
                 cornerRadius == other.cornerRadius &&
                 strokeWidth == other.strokeWidth &&
@@ -635,7 +639,7 @@ public interface RichSpanStyle {
 
         override fun hashCode(): Int {
             var result = checked.hashCode()
-            result = 31 * result + size.hashCode()
+            result = 31 * result + boxSize.hashCode()
             result = 31 * result + gap.hashCode()
             result = 31 * result + cornerRadius.hashCode()
             result = 31 * result + strokeWidth.hashCode()
