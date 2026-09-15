@@ -253,7 +253,32 @@ internal object RichTextStateHtmlParser : RichTextStateParser<String> {
                      *
                      * ⚠️ `isFromLineBreak` / `lineBreakParagraphIndexSet` 的相关逻辑因此不再
                      * 被本路径触发（保留代码以兼容旧 HTML 数据，暂时成为死路径）。
+                     *
+                     * ⚠️ `\n` 需要**两处都写**（实测漏掉 span 侧会变成"两行变一行"）：
+                     * - **span 树**：渲染与 `toText` 的真相来源 —— 按 Ksoup 文本回调的
+                     *   同款逻辑写入（`\n` 独占一个子 span）；
+                     * - [stringBuilder]：与 Ksoup 文本回调的缓冲语义保持一致（它影响
+                     *   `trimStart` 的折叠判断）。
                      */
+                    run {
+                        val currentRichParagraph = richParagraphList.last()
+                        val safeCurrentRichSpan =
+                            currentRichSpan ?: RichSpan(paragraph = currentRichParagraph)
+
+                        if (safeCurrentRichSpan.children.isEmpty()) {
+                            safeCurrentRichSpan.text += "\n"
+                        } else {
+                            val newRichSpan = RichSpan(paragraph = currentRichParagraph)
+                            newRichSpan.text = "\n"
+                            newRichSpan.parent = safeCurrentRichSpan
+                            safeCurrentRichSpan.children.add(newRichSpan)
+                        }
+
+                        if (currentRichSpan == null) {
+                            currentRichSpan = safeCurrentRichSpan
+                            currentRichParagraph.children.add(safeCurrentRichSpan)
+                        }
+                    }
                     stringBuilder.append('\n')
                 }
             }
