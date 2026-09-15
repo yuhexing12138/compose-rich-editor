@@ -3141,27 +3141,22 @@ public class RichTextState internal constructor(
 
                         if (!singleParagraphMode) {
                             /**
-                             * v2026-09-15 方案 D'（实验）：段落之间写**真实换行符** `\n`
-                             * （原为占位空格）。
+                             * v2026-09-15 方案 D'（第 5 版）：段落之间写 **ZWSP（U+200B，零宽）**。
                              *
-                             * 前提：ParagraphStyle range 边界与 `\n` **重合**（`\n` 是上一段
-                             * 最后一个字符）—— Compose 官方文档示例即为此形态
-                             * （`addStyle(paragraphStyle1, 0, text.indexOf('\n') + 1)`），
-                             * 按官方语义"如同插入了换行符"，应为**单次换行**；实测若出现
-                             * 双重换行，回退本行与 markdown parser 的实验性分段。
+                             * 已实测排除的三种（都失败）：
+                             * - 占位空格：有宽度 → "行尾 offset"落到下一段首（手柄拖到行尾跳行）❌
+                             * - 真实 `\n`：与段落边界的隐式换行叠加 → 段间出现空行 ❌
+                             * - 不写任何字符：offset 完全重合 → 同样跳行 ❌
                              *
-                             * 好处：段落间 `\n` 让"行尾"拥有真实 offset 归属（手柄拖到行尾
-                             * 不再跳行），且**所有段落都是独立段落**——复选框/列表等段落级
-                             * 操作恢复行粒度。
+                             * ZWSP 兼得：**零宽**（不产生空行/空格 ✅）+ **占 offset**（行尾有
+                             * 归属，手柄拖到行尾停在段末 ✅）。App 侧 `effectiveText` 已剥
+                             * ZWSP，不污染字数与空行判定。
                              *
-                             * 旧注释备查：占位空格原用于修 Compose「多段落时最后一个字符
-                             * 不可选」（Add empty space in the end of each paragraph to fix
-                             * an issue with Compose TextField that makes that last char
-                             * non-selectable when having multiple paragraphs）—— `\n` 是
-                             * 零宽字符，该问题可能回归，需真机观察。
+                             * 旧注释备查：占位空格原用于修 Compose「多段落时最后一个字符不可选」
+                             * —— ZWSP 同样占 offset，该问题预计不会回归，需真机确认。
                              */
                             if (i != richParagraphList.lastIndex && index < newText.length) {
-                                append('\n')
+                                append('\u200B')
                                 index++
                             }
                         }
@@ -3755,8 +3750,8 @@ public class RichTextState internal constructor(
             append(paragraph.type.startRichSpan.text)
             paragraph.children.fastForEach { appendSpanText(it) }
             if (!singleParagraphMode && index != richParagraphList.lastIndex) {
-                /** v2026-09-15 方案 D'：与 [updateAnnotatedString] 一致，段落间用 `\n`（原为占位空格） */
-                append('\n')
+                /** v2026-09-15 方案 D'：与 [updateAnnotatedString] 一致，段落间用 ZWSP（零宽、占 offset） */
+                append('\u200B')
             }
         }
     }
