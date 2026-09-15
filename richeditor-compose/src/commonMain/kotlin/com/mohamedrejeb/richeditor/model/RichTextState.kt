@@ -2127,6 +2127,28 @@ public class RichTextState internal constructor(
     }
 
     /**
+     * 在指定**指针位置**尝试切换任务列表项的勾选态（勾选框点击入口，v2026-09-15）。
+     *
+     * 与 [toggleTaskListCheckedAtTextOffset] 的区别：调用方只提供指针坐标，
+     * **「坐标 → 文本偏移」的换算放在库内完成**（内部用
+     * `TextLayoutResult.getOffsetForPosition`）——宿主因此无需访问库的排版结果
+     * （`textLayoutResult` 是 internal，跨模块不可见）。
+     *
+     * ⚠️ 坐标需相对**文本布局原点**：带 contentPadding 的宿主应先自行扣除内边距。
+     *
+     * @param position 指针位置（px）。
+     * @return true = 命中并已切换（调用方应消费该手势）；false = 未命中。
+     */
+    public fun toggleTaskListCheckedAtPosition(position: Offset): Boolean {
+        val layout = textLayoutResult ?: return false
+
+        /** 落在文本行之外（如块下方空白）不算命中，避免误触发 */
+        if (position.y < 0f || position.y > layout.size.height) return false
+
+        return toggleTaskListCheckedAtTextOffset(layout.getOffsetForPosition(position))
+    }
+
+    /**
      * 段落正文的附加 SpanStyle（v2026-09-15）：任务列表**已勾选**段落的 children 整体
      * 叠加 [RichTextConfig.taskListCheckedTextColor]（由 App 传 40% 透明色），承载
      * "勾选后文字视觉降级"；其余情况返回 [RichSpanStyle.DefaultSpanStyle]（零副作用）。
