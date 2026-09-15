@@ -2809,7 +2809,12 @@ public class RichTextState internal constructor(
         // The span tree is the source of truth for the text: re-derive it before the
         // rebuild so the two can never desync (#716 crash family). Skipped on pure
         // selection changes, the drag-selection hot path (#730).
-        if (tempTextFieldValue.text != textFieldValue.text) {
+        //
+        // v2026-09-15 方案 D：**单普通段落块**跳过该覆盖 ——
+        // 这类块的 `\n` 是段内软换行、**只存在于文本层**（span tree 里没有 `\n` 信息，
+        // 段落间由 ParagraphStyle 边界承载），用 tree 覆盖会把 `\n` 一并抹掉、软换行消失。
+        // 三处条件见 [isSoftLineBreakBlock]。
+        if (tempTextFieldValue.text != textFieldValue.text && !isSoftLineBreakBlock()) {
             val treeText = computeTextFromTree()
             if (treeText != tempTextFieldValue.text) {
                 tempTextFieldValue = tempTextFieldValue.copy(
@@ -3068,8 +3073,20 @@ public class RichTextState internal constructor(
          * clamp 到下一行行首。修它需要重做段落承载方式（`\n` 参与换行 + ParagraphStyle
          * 只作样式），不是改一两行能解决的。
          */
+        /**
+         * v2026-09-15 **方案 D（最小验证）**：单普通段落块保留段内 `\n`（软换行），
+         * 不替换成空格。
+         *
+         * 为什么：`\n` 真实存在于文本层时，"行尾"才拥有**自己的 offset** —— 选择手柄
+         * 拖到行尾继续往右会停住，而不会 clamp 到下一段首字符（修"拖到行尾跳到下一行"）。
+         * 且此处的 `\n` 位于段落**内部**（不是段末），与 `ParagraphStyle` 的边界换行
+         * 是两套机制、**不会叠加**，因此不产生额外空行。
+         *
+         * 其余情况（列表 / 任务列表 / 多段落块）保持原行为（`\n`→空格 + 拆段）：
+         * 列表项的 bullet 与任务列表的勾选框需要独立段落承载。
+         */
         val newText =
-            if (singleParagraphMode)
+            if (singleParagraphMode || isSoftLineBreakBlock())
                 newTextFieldValue.text
             else
                 newTextFieldValue.text.replace('\n', ' ')
@@ -4009,7 +4026,27 @@ public class RichTextState internal constructor(
         }
     }
 
+    /**
+     * 是否为「**单普通段落块**」（v2026-09-15 方案 D）。
+     *
+     * 这类块的 `\n` 是**段内软换行**（不是段落分隔），必须在整条文本处理链路上**一致对待**：
+     * - [checkForParagraphs]：不拆段（否则每次回车新增一段）；
+     * - [updateAnnotatedString]：不把 `\n` 替换成空格（否则换行消失）；
+     * - [updateTextFieldValue]：不用 span tree 覆盖文本（tree 里不含 `\n` 信息，覆盖会抹掉它）。
+     *
+     * ⚠️ 三处条件必须**完全一致**：任一处遗漏都会导致"保留了 `\n` 又被拆段/抹掉"，
+     * 或"拆了段却留着 `\n`"（双重换行）。
+     */
+    private fun isSoftLineBreakBlock(): Boolean =
+        richParagraphList.size == 1 && richParagraphList.first().type is DefaultParagraph
+
     private fun checkForParagraphs() {
+        /**
+         * v2026-09-15 **方案 D（最小验证）**：单普通段落块里 `\n` 是段内软换行、不是新段落
+         * 分隔 —— 直接返回、不拆段（否则每次回车都会新增一段，段落数爆炸）。
+         */
+        if (isSoftLineBreakBlock()) return
+
         var index = tempTextFieldValue.text.lastIndex
 
         // Count newlines vs paragraph breaks to detect unprocessed newlines.
