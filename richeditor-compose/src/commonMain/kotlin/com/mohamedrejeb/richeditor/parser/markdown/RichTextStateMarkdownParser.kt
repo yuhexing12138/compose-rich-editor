@@ -439,15 +439,16 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                         richParagraphList.add(RichParagraph())
                     } else if (!isParagraphBreak) {
                         /**
-                         * ⚠️ 方案 D'（实验定稿）：软换行**新起段落**，但 `\n` **不在这里写入**——
-                         * 它由 [updateAnnotatedString] 构建 annotatedString 时在**段落之间统一
-                         * 写入**（`append('\n')`，与 `computeTextFromTree` 一致）。
+                         * 软换行：`\n` 作为**段内文本**写入当前段落（不分段）。
                          *
-                         * 实测教训：曾在这里 `onText("\n")` + 分段，结果「段内 `\n`」与「段间
-                         * `\n`」**重复**——编辑时单次换行 ✅，保存重进后出现空行 ❌。
-                         * 单一来源原则：分段归 parser，`\n` 归 annotatedString 构建。
+                         * ⚠️ 2026-09-15 定稿结论：曾实验「软换行也分段」（方案 D'，段间
+                         * 占位空格 / ZWSP / 真实 `\n` / 不写 四种占位都试过）——分段虽给
+                         * 段落级操作（复选框/列表）行粒度，但手柄拖拽的行尾归属无解
+                         * （占位空格/ZWSP 跳行、`\n` 空行、无字符重合），且段间 `\n` 会与
+                         * 段落边界叠加产生空行。**定稿：普通段落块保持单段落 + 段内 `\n`**，
+                         * 段落级操作（复选框等）按整块语义执行。
                          */
-                        richParagraphList.add(RichParagraph())
+                        onText("\n")
                     }
 
                     currentRichSpan = null

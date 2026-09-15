@@ -3141,22 +3141,20 @@ public class RichTextState internal constructor(
 
                         if (!singleParagraphMode) {
                             /**
-                             * v2026-09-15 方案 D'（第 5 版）：段落之间写 **ZWSP（U+200B，零宽）**。
+                             * 段落之间的**占位空格**（v2026-09-15 定稿）。
                              *
-                             * 已实测排除的三种（都失败）：
-                             * - 占位空格：有宽度 → "行尾 offset"落到下一段首（手柄拖到行尾跳行）❌
-                             * - 真实 `\n`：与段落边界的隐式换行叠加 → 段间出现空行 ❌
-                             * - 不写任何字符：offset 完全重合 → 同样跳行 ❌
+                             * 为什么必须是有宽度的空格：方案 D 定稿为「普通段落块 = 单段落 +
+                             * 段内 `\n`」，多段落块（列表 / 任务列表）的段间需要一个占位让
+                             * "末字符可选"。曾实验的 `\n`（段间空行 ❌）/ ZWSP（手柄跳行 ❌）/
+                             * 不写（offset 重合跳行 ❌）均不可用，结论见 [isSoftLineBreakBlock]。
                              *
-                             * ZWSP 兼得：**零宽**（不产生空行/空格 ✅）+ **占 offset**（行尾有
-                             * 归属，手柄拖到行尾停在段末 ✅）。App 侧 `effectiveText` 已剥
-                             * ZWSP，不污染字数与空行判定。
-                             *
-                             * 旧注释备查：占位空格原用于修 Compose「多段落时最后一个字符不可选」
-                             * —— ZWSP 同样占 offset，该问题预计不会回归，需真机确认。
+                             * 已知副作用（原注释）：本占位空格使"上一行的行尾 offset"落到下一
+                             * 段首字符的视觉位置上，拖拽选择手柄越过行宽时会 clamp 到下一行
+                             * 行首——**多段落块（列表 / 任务列表）的手柄行为受此影响**；普通
+                             * 单段落块无段间占位、不受影响。
                              */
                             if (i != richParagraphList.lastIndex && index < newText.length) {
-                                append('\u200B')
+                                append(' ')
                                 index++
                             }
                         }
@@ -3750,8 +3748,8 @@ public class RichTextState internal constructor(
             append(paragraph.type.startRichSpan.text)
             paragraph.children.fastForEach { appendSpanText(it) }
             if (!singleParagraphMode && index != richParagraphList.lastIndex) {
-                /** v2026-09-15 方案 D'：与 [updateAnnotatedString] 一致，段落间用 ZWSP（零宽、占 offset） */
-                append('\u200B')
+                /** v2026-09-15 定稿：与 [updateAnnotatedString] 一致，段落间用占位空格 */
+                append(' ')
             }
         }
     }
@@ -4030,25 +4028,31 @@ public class RichTextState internal constructor(
     }
 
     /**
-     * 是否为「**纯普通段落块**」（v2026-09-15 方案 D / D'）：块内**所有段落**都是
-     * [DefaultParagraph]（无列表 / 任务列表）。
+     * 是否为「**单普通段落块**」（v2026-09-15 方案 D 定稿）：块内**只有一个段落**且为
+     * [DefaultParagraph]。
      *
-     * 这类块的 `\n` 是**软换行**（不是段落分隔）。「软换行」信息同时存在于
-     * **五个落点**，必须在全链路一致对待——任何一处遗漏都会在对应使用方上表现为 bug：
+     * ⚠️ 2026-09-15 定稿：曾实验「每行一段」（方案 D'，段间占位空格 / ZWSP / 真实 `\n` /
+     * 不写 四种占位全部实测）以让复选框等段落级操作获得行粒度——但手柄拖拽的行尾归属
+     * 无解（占位空格 / ZWSP 跳行、`\n` 空行、无字符 offset 重合同样跳行），且段间 `\n`
+     * 与段落边界叠加产生空行。**定稿：普通段落块保持单段落 + 段内 `\n`**；段落级操作
+     * （复选框等）按**整块**语义执行。
+     *
+     * 「软换行」信息同时存在于**五个落点**，必须在全链路一致对待——任何一处遗漏都会
+     * 在对应使用方上表现为 bug：
      *
      * | 落点 | 规则 | 遗漏后果 |
      * |------|------|----------|
-     * | [checkForParagraphs] | 不再按 `\n` 拆段（软换行的分段由 parser 负责） | 段落数爆炸 |
+     * | [checkForParagraphs] | 不再按 `\n` 拆段（软换行的分段已随 D' 实验回退） | 段落数爆炸 |
      * | [updateAnnotatedString] | 不把 `\n` 替换成空格 | 换行消失（两行变一行） |
      * | [updateTextFieldValue] | 不用 span tree 覆盖文本（tree 无 `\n` 信息） | `\n` 被静默抹掉 |
-     * | markdown parser（RichTextStateMarkdownParser） | `onText` 保留 `\n`；EOL 软换行也分段（`\n` 留上段） | 保存重进后换行变段落边界 |
+     * | markdown parser（RichTextStateMarkdownParser） | `onText` 保留 `\n`；软换行不分段 | 保存重进后换行变段落边界 |
      * | HTML 剪贴板（RichTextStateHtmlParser） | 解码：`<br>` 归段内 `\n`（不新建段落）；编码：段内 `\n` 输出为 `<br>` | 复制/粘贴丢换行（变空格或变一行） |
      *
      * ⚠️ 各落点条件必须**完全一致**；新增文本处理路径（新的序列化/反序列化通道）时，
      * 先对照本表补齐，并用「输入 → 复制 → 粘贴 → 保存 → 重进」round-trip 验证。
      */
     private fun isSoftLineBreakBlock(): Boolean =
-        richParagraphList.all { it.type is DefaultParagraph }
+        richParagraphList.size == 1 && richParagraphList.first().type is DefaultParagraph
 
     private fun checkForParagraphs() {
         /**
