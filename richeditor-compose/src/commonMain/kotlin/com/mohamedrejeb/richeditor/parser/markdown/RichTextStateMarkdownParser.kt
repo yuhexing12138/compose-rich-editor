@@ -439,16 +439,13 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                         richParagraphList.add(RichParagraph())
                     } else if (!isParagraphBreak) {
                         /**
-                         * 软换行：把 `\n` 作为**段内文本**写下 —— "行尾"因此拥有真实的
-                         * offset 归属，手柄拖到行尾不会跳到下一行。
-                         */
-                        onText("\n")
-                        /**
-                         * ⚠️ 实验（方案 D'，2026-09-15）：软换行**也新起段落**（`\n` 留在
-                         * 上一段末尾）—— 验证「ParagraphStyle range 边界与 `\n` 重合」时
-                         * Compose 的渲染行为：单次换行（✅ 则"每行独立段落（复选框/列表
-                         * 有行粒度）"与"行尾 offset 归属（手柄不跳行）"兼得，按此重构）
-                         * 还是双重换行（❌ 回退本行与 updateAnnotatedString 的 `append('\n')`）。
+                         * ⚠️ 方案 D'（实验定稿）：软换行**新起段落**，但 `\n` **不在这里写入**——
+                         * 它由 [updateAnnotatedString] 构建 annotatedString 时在**段落之间统一
+                         * 写入**（`append('\n')`，与 `computeTextFromTree` 一致）。
+                         *
+                         * 实测教训：曾在这里 `onText("\n")` + 分段，结果「段内 `\n`」与「段间
+                         * `\n`」**重复**——编辑时单次换行 ✅，保存重进后出现空行 ❌。
+                         * 单一来源原则：分段归 parser，`\n` 归 annotatedString 构建。
                          */
                         richParagraphList.add(RichParagraph())
                     }
