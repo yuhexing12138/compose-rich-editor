@@ -3141,20 +3141,27 @@ public class RichTextState internal constructor(
 
                         if (!singleParagraphMode) {
                             /**
-                             * ⚠️ 这里**必须**是"有宽度的占位字符"（空格），不能改成 `\n`
-                             * ——2026-09-15 试过并回退，两个坑见 [updateAnnotatedString] 的
-                             * 说明（双重换行 / 段落数爆炸）。
+                             * v2026-09-15 方案 D'（实验）：段落之间写**真实换行符** `\n`
+                             * （原为占位空格）。
                              *
-                             * 为什么需要这个占位（原注释）：修 Compose 的「多段落时最后一个
-                             * 字符不可选」——"Add empty space in the end of each paragraph to
-                             * fix an issue with Compose TextField that makes that last char
-                             * non-selectable when having multiple paragraphs"。
+                             * 前提：ParagraphStyle range 边界与 `\n` **重合**（`\n` 是上一段
+                             * 最后一个字符）—— Compose 官方文档示例即为此形态
+                             * （`addStyle(paragraphStyle1, 0, text.indexOf('\n') + 1)`），
+                             * 按官方语义"如同插入了换行符"，应为**单次换行**；实测若出现
+                             * 双重换行，回退本行与 markdown parser 的实验性分段。
                              *
-                             * 已知副作用：本占位空格使"上一行的行尾 offset"落到下一段首字符
-                             * 的视觉位置上，拖拽选择手柄越过行宽时会 clamp 到下一行行首。
+                             * 好处：段落间 `\n` 让"行尾"拥有真实 offset 归属（手柄拖到行尾
+                             * 不再跳行），且**所有段落都是独立段落**——复选框/列表等段落级
+                             * 操作恢复行粒度。
+                             *
+                             * 旧注释备查：占位空格原用于修 Compose「多段落时最后一个字符
+                             * 不可选」（Add empty space in the end of each paragraph to fix
+                             * an issue with Compose TextField that makes that last char
+                             * non-selectable when having multiple paragraphs）—— `\n` 是
+                             * 零宽字符，该问题可能回归，需真机观察。
                              */
                             if (i != richParagraphList.lastIndex && index < newText.length) {
-                                append(' ')
+                                append('\n')
                                 index++
                             }
                         }
@@ -3748,7 +3755,8 @@ public class RichTextState internal constructor(
             append(paragraph.type.startRichSpan.text)
             paragraph.children.fastForEach { appendSpanText(it) }
             if (!singleParagraphMode && index != richParagraphList.lastIndex) {
-                append(' ')
+                /** v2026-09-15 方案 D'：与 [updateAnnotatedString] 一致，段落间用 `\n`（原为占位空格） */
+                append('\n')
             }
         }
     }
@@ -4027,24 +4035,25 @@ public class RichTextState internal constructor(
     }
 
     /**
-     * 是否为「**单普通段落块**」（v2026-09-15 方案 D）。
+     * 是否为「**纯普通段落块**」（v2026-09-15 方案 D / D'）：块内**所有段落**都是
+     * [DefaultParagraph]（无列表 / 任务列表）。
      *
-     * 这类块的 `\n` 是**段内软换行**（不是段落分隔）。「段内换行」这一信息同时存在于
+     * 这类块的 `\n` 是**软换行**（不是段落分隔）。「软换行」信息同时存在于
      * **五个落点**，必须在全链路一致对待——任何一处遗漏都会在对应使用方上表现为 bug：
      *
      * | 落点 | 规则 | 遗漏后果 |
      * |------|------|----------|
-     * | [checkForParagraphs] | 不拆段 | 每次回车新增一段（段落数爆炸） |
+     * | [checkForParagraphs] | 不再按 `\n` 拆段（软换行的分段由 parser 负责） | 段落数爆炸 |
      * | [updateAnnotatedString] | 不把 `\n` 替换成空格 | 换行消失（两行变一行） |
      * | [updateTextFieldValue] | 不用 span tree 覆盖文本（tree 无 `\n` 信息） | `\n` 被静默抹掉 |
-     * | markdown parser（RichTextStateMarkdownParser） | `onText` 保留 `\n`；EOL 仅在空行（`\n\n`）时才分段 | 保存重进后换行变段落边界 |
+     * | markdown parser（RichTextStateMarkdownParser） | `onText` 保留 `\n`；EOL 软换行也分段（`\n` 留上段） | 保存重进后换行变段落边界 |
      * | HTML 剪贴板（RichTextStateHtmlParser） | 解码：`<br>` 归段内 `\n`（不新建段落）；编码：段内 `\n` 输出为 `<br>` | 复制/粘贴丢换行（变空格或变一行） |
      *
      * ⚠️ 各落点条件必须**完全一致**；新增文本处理路径（新的序列化/反序列化通道）时，
      * 先对照本表补齐，并用「输入 → 复制 → 粘贴 → 保存 → 重进」round-trip 验证。
      */
     private fun isSoftLineBreakBlock(): Boolean =
-        richParagraphList.size == 1 && richParagraphList.first().type is DefaultParagraph
+        richParagraphList.all { it.type is DefaultParagraph }
 
     private fun checkForParagraphs() {
         /**
