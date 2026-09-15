@@ -3054,6 +3054,20 @@ public class RichTextState internal constructor(
      * @see [annotatedString]
      */
     internal fun updateAnnotatedString(newTextFieldValue: TextFieldValue = textFieldValue) {
+        /**
+         * ⚠️ **不要把这里的替换改成"保留 `\n`"**（2026-09-15 试过并已回退，原因务必先读）。
+         *
+         * 库的段落**由 `ParagraphStyle` 的 range 边界承载**（边界处必然换行），文本层不
+         * 携带换行符。若把 `\n` 保留下来，会同时踩两个坑：
+         * 1. **双重换行**：`\n` 与 ParagraphStyle 边界都换行 → 段落之间多出空行；
+         * 2. **段落数爆炸**：[checkForParagraphs] 会扫描文本里所有 `\n` 并拆成新段落，
+         *    它原本依赖"文本层没有 `\n`"来区分"用户新输入的换行"与"段落分隔"。
+         *
+         * 已知副作用（App 侧记录的体验问题）：段末的占位空格（见下方 append(' ')）让
+         * "上一行的行尾 offset"落到下一段首字符的视觉位置上，拖拽选择手柄越过行宽时会
+         * clamp 到下一行行首。修它需要重做段落承载方式（`\n` 参与换行 + ParagraphStyle
+         * 只作样式），不是改一两行能解决的。
+         */
         val newText =
             if (singleParagraphMode)
                 newTextFieldValue.text
@@ -3109,8 +3123,19 @@ public class RichTextState internal constructor(
                         )
 
                         if (!singleParagraphMode) {
-                            // Add empty space in the end of each paragraph to fix an issue with Compose TextField
-                            // that makes that last char non-selectable when having multiple paragraphs
+                            /**
+                             * ⚠️ 这里**必须**是"有宽度的占位字符"（空格），不能改成 `\n`
+                             * ——2026-09-15 试过并回退，两个坑见 [updateAnnotatedString] 的
+                             * 说明（双重换行 / 段落数爆炸）。
+                             *
+                             * 为什么需要这个占位（原注释）：修 Compose 的「多段落时最后一个
+                             * 字符不可选」——"Add empty space in the end of each paragraph to
+                             * fix an issue with Compose TextField that makes that last char
+                             * non-selectable when having multiple paragraphs"。
+                             *
+                             * 已知副作用：本占位空格使"上一行的行尾 offset"落到下一段首字符
+                             * 的视觉位置上，拖拽选择手柄越过行宽时会 clamp 到下一行行首。
+                             */
                             if (i != richParagraphList.lastIndex && index < newText.length) {
                                 append(' ')
                                 index++
