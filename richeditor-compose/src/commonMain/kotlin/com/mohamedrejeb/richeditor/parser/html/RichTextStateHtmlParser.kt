@@ -239,56 +239,22 @@ internal object RichTextStateHtmlParser : RichTextStateParser<String> {
                     currentRichSpan = newRichSpan
                 } else {
                     // name == "br"
-                    stringBuilder.append(' ')
-
-                    val newParagraph =
-                        if (richParagraphList.isEmpty())
-                            RichParagraph(isFromLineBreak = true)
-                        else
-                            RichParagraph(
-                                paragraphStyle = richParagraphList.last().paragraphStyle,
-                                isFromLineBreak = true,
-                            )
-
-                    richParagraphList.add(newParagraph)
-
-                    if (richParagraphList.lastIndex > 0)
-                        lineBreakParagraphIndexSet.add(richParagraphList.lastIndex - 1)
-
-                    lineBreakParagraphIndexSet.add(richParagraphList.lastIndex)
-
-                    // Keep the same style when having a line break in the middle of a paragraph,
-                    // Ex: <h1>Hello<br>World!</h1>
-                    if (currentRichSpan != null && openedTags.isNotEmpty()) {
-                        currentRichSpan = null
-
-                        openedTags.forEach { (name, attributes) ->
-                            val cssStyleMap = attributes["style"]?.let { CssEncoder.parseCssStyle(it) } ?: emptyMap()
-                            val cssSpanStyle = CssEncoder.parseCssStyleMapToSpanStyle(cssStyleMap)
-                            val tagSpanStyle = htmlElementsSpanStyleEncodeMap[name]
-                            val tagWithCssSpanStyle = cssSpanStyle.customMerge(tagSpanStyle)
-                            val richSpanStyle = encodeHtmlElementToRichSpanStyle(name, attributes)
-
-                            val newRichSpan = RichSpan(
-                                children = mutableListOf(),
-                                paragraph = newParagraph,
-                                parent = currentRichSpan,
-                                text = "",
-                                textRange = TextRange.Zero,
-                                spanStyle = tagWithCssSpanStyle,
-                                richSpanStyle = richSpanStyle,
-                            )
-
-                            if (currentRichSpan == null) {
-                                newParagraph.children.add(newRichSpan)
-                            } else {
-                                currentRichSpan?.children?.add(newRichSpan)
-                            }
-
-                            currentRichSpan = newRichSpan
-                        }
-
-                    }
+                    /**
+                     * v2026-09-15 方案 D（配套）：`<br>` 表示**段内软换行**，不再新起段落。
+                     *
+                     * 原实现：往文本缓冲塞一个占位空格 + 新建段落（`isFromLineBreak = true`），
+                     * 导致「段内换行」在复制 / 粘贴（HTML 通道）往返中变成「段落边界」——
+                     * 行尾 offset 归属丢失（手柄拖到行尾又跳下一行），且段落间占位空格被一并
+                     * 带出（表现为换行处多出一个空格）。
+                     *
+                     * 新行为：只向文本缓冲写入 `\n`，段落保持不变；`\n` 之后的文本自然延续
+                     * 当前打开标签的样式（如 `<h1>Hello<br>World!</h1>` 的 World 仍是 h1），
+                     * 因此也无需重开标签。
+                     *
+                     * ⚠️ `isFromLineBreak` / `lineBreakParagraphIndexSet` 的相关逻辑因此不再
+                     * 被本路径触发（保留代码以兼容旧 HTML 数据，暂时成为死路径）。
+                     */
+                    stringBuilder.append('\n')
                 }
             }
             .onCloseTag { name, _ ->
