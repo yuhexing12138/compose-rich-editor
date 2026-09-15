@@ -4029,13 +4029,19 @@ public class RichTextState internal constructor(
     /**
      * 是否为「**单普通段落块**」（v2026-09-15 方案 D）。
      *
-     * 这类块的 `\n` 是**段内软换行**（不是段落分隔），必须在整条文本处理链路上**一致对待**：
-     * - [checkForParagraphs]：不拆段（否则每次回车新增一段）；
-     * - [updateAnnotatedString]：不把 `\n` 替换成空格（否则换行消失）；
-     * - [updateTextFieldValue]：不用 span tree 覆盖文本（tree 里不含 `\n` 信息，覆盖会抹掉它）。
+     * 这类块的 `\n` 是**段内软换行**（不是段落分隔）。「段内换行」这一信息同时存在于
+     * **五个落点**，必须在全链路一致对待——任何一处遗漏都会在对应使用方上表现为 bug：
      *
-     * ⚠️ 三处条件必须**完全一致**：任一处遗漏都会导致"保留了 `\n` 又被拆段/抹掉"，
-     * 或"拆了段却留着 `\n`"（双重换行）。
+     * | 落点 | 规则 | 遗漏后果 |
+     * |------|------|----------|
+     * | [checkForParagraphs] | 不拆段 | 每次回车新增一段（段落数爆炸） |
+     * | [updateAnnotatedString] | 不把 `\n` 替换成空格 | 换行消失（两行变一行） |
+     * | [updateTextFieldValue] | 不用 span tree 覆盖文本（tree 无 `\n` 信息） | `\n` 被静默抹掉 |
+     * | markdown parser（RichTextStateMarkdownParser） | `onText` 保留 `\n`；EOL 仅在空行（`\n\n`）时才分段 | 保存重进后换行变段落边界 |
+     * | HTML 剪贴板（RichTextStateHtmlParser） | 解码：`<br>` 归段内 `\n`（不新建段落）；编码：段内 `\n` 输出为 `<br>` | 复制/粘贴丢换行（变空格或变一行） |
+     *
+     * ⚠️ 各落点条件必须**完全一致**；新增文本处理路径（新的序列化/反序列化通道）时，
+     * 先对照本表补齐，并用「输入 → 复制 → 粘贴 → 保存 → 重进」round-trip 验证。
      */
     private fun isSoftLineBreakBlock(): Boolean =
         richParagraphList.size == 1 && richParagraphList.first().type is DefaultParagraph
