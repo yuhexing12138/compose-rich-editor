@@ -3107,17 +3107,6 @@ public class RichTextState internal constructor(
                         TextRange(index, index + richParagraphStartTextLength)
                     index += richParagraphStartTextLength
                     /**
-                     * 段落之间的**占位空格**（v2026-09-15 定稿）：让"末字符可选"（原注释：
-                     * 修 Compose 多段落末字符不可选）。已知副作用：占位使"上一段的行尾
-                     * offset"落到下一段首字符的视觉位置上，**多段落块（列表/任务列表）的
-                     * 手柄拖到行尾会跳行**——TaskList 块已改为行级渲染（勾选框按段内
-                     * `\n` 分行、状态行级），普通单段落块无段间占位、不受影响。
-                     */
-                    if (i != richParagraphList.lastIndex && index < newText.length) {
-                        append(' ')
-                        index++
-                    }
-                    /**
                      * 段落正文的附加样式（v2026-09-15）：任务列表**已勾选**段落的
                      * children 整体叠加 [RichTextConfig.taskListCheckedTextColor]
                      * （App 传 40% 透明色），实现"勾选后文字降级"——块内多行、部分勾选
@@ -3134,6 +3123,17 @@ public class RichTextState internal constructor(
                                 newStyledRichSpanList.add(it)
                             },
                         )
+
+                        /**
+                         * 段落之间的**占位空格**（除最后一段）：修 Compose「多段落时最后
+                         * 一个字符不可选」。已知副作用：占位使"上一段的行尾 offset"落到
+                         * 下一段首字符的视觉位置上——**多段落块（列表/任务列表）的手柄
+                         * 拖到行尾会跳行**（已知限制；普通单段落块无段间占位、不受影响）。
+                         */
+                        if (i != richParagraphList.lastIndex && index < newText.length) {
+                            append(' ')
+                            index++
+                        }
                     }
                 }
             }
@@ -3726,7 +3726,6 @@ public class RichTextState internal constructor(
             if (!singleParagraphMode && index != richParagraphList.lastIndex) {
                 /** v2026-09-15：与 [updateAnnotatedString] 一致，段落间用占位空格 */
                 append(' ')
-            }
             }
         }
     }
