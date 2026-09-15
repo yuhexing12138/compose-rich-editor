@@ -84,8 +84,14 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         }
 
         fun onText(text: String) {
-            val text = text.replace('\n', ' ')
-
+            /**
+             * v2026-09-15 方案 D（配套）：**保留软换行 `\n`**，不再替换成空格。
+             *
+             * 原实现 `text.replace('\n', ' ')` 会把段内换行抹成空格 —— 于是"保存 → 重进"
+             * 后段内 `\n` 消失、行尾失去 offset 归属，选区手柄拖到行尾又会跳到下一行
+             * （App 实测复现）。段落分隔由 EOL 处理（只有空行才新起段落），
+             * 因此这里保留 `\n` 不会改变段落数。
+             */
             if (text.isEmpty()) return
 
             if (richParagraphList.isEmpty())
@@ -399,13 +405,44 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                     val lastBrParagraphIndex = brParagraphIndices.lastOrNull()
                     val beforeLastBrParagraphIndex = brParagraphIndices.getOrNull(brParagraphIndices.lastIndex - 1)
 
+                    /**
+                     * v2026-09-15 方案 D（配套）：区分**软换行**与**段落分隔**。
+                     *
+                     * 原实现是"上一段非空就新起段落" → markdown 里**每一行都变成独立段落**，
+                     * 于是"保存 → 重进"后块内从「单段落 + 段内 `\n`」退化成「多段落」，
+                     * 段内 `\n` 丢失、行尾失去 offset 归属 → 手柄拖到行尾又跳到下一行（实测复现）。
+                     *
+                     * 判定：本 EOL 之后（跳过行内空白）**紧跟另一个换行** ⇒ 空行 ⇒ 真段落分隔；
+                     * 否则是单 `\n` 的软换行，留在同一段落内。
+                     */
+                    val isParagraphBreak = run {
+                        var i = node.endOffset
+                        while (
+                            i < correctedMarkdown.length &&
+                            correctedMarkdown[i] != '\n' &&
+                            correctedMarkdown[i].isWhitespace()
+                        ) {
+                            i++
+                        }
+                        i < correctedMarkdown.length && correctedMarkdown[i] == '\n'
+                    }
+
                     if (
-                        lastParagraph?.isNotEmpty() == true ||
-                        beforeLastParagraph?.isNotEmpty() == true ||
-                        lastBrParagraphIndex == richParagraphList.lastIndex ||
-                        beforeLastBrParagraphIndex == richParagraphList.lastIndex - 1
+                        isParagraphBreak &&
+                        (
+                            lastParagraph?.isNotEmpty() == true ||
+                                beforeLastParagraph?.isNotEmpty() == true ||
+                                lastBrParagraphIndex == richParagraphList.lastIndex ||
+                                beforeLastBrParagraphIndex == richParagraphList.lastIndex - 1
+                            )
                     ) {
                         richParagraphList.add(RichParagraph())
+                    } else if (!isParagraphBreak) {
+                        /**
+                         * 软换行：把 `\n` 作为**段内文本**写下 —— 这是方案 D 成立的前提，
+                         * "行尾"因此拥有真实的 offset 归属，手柄拖到行尾不会跳到下一行。
+                         */
+                        onText("\n")
                     }
 
                     currentRichSpan = null
