@@ -3060,36 +3060,22 @@ public class RichTextState internal constructor(
      */
     internal fun updateAnnotatedString(newTextFieldValue: TextFieldValue = textFieldValue) {
         /**
-         * ⚠️ **不要把这里的替换改成"保留 `\n`"**（2026-09-15 试过并已回退，原因务必先读）。
+         * v2026-09-15 定稿：`\n` 在文本层**替换为 ZWSP**（U+200B，零宽、占 offset）。
          *
-         * 库的段落**由 `ParagraphStyle` 的 range 边界承载**（边界处必然换行），文本层不
-         * 携带换行符。若把 `\n` 保留下来，会同时踩两个坑：
-         * 1. **双重换行**：`\n` 与 ParagraphStyle 边界都换行 → 段落之间多出空行；
-         * 2. **段落数爆炸**：[checkForParagraphs] 会扫描文本里所有 `\n` 并拆成新段落，
-         *    它原本依赖"文本层没有 `\n`"来区分"用户新输入的换行"与"段落分隔"。
+         * 为什么不是"保留 `\n`"：`\n` 会与 ParagraphStyle 边界的换行**叠加**产生空行
+         * （实测）。ZWSP 零宽、不换行，仅用于在段落边界处**占住一个 offset**，让
+         * "上一段的行尾"与"下一段的开头"在 offset 上分离——选择手柄拖到行尾 clamp
+         * 时停在上一段末，**不会越过段落边界跳到下一行**。
          *
-         * 已知副作用（App 侧记录的体验问题）：段末的占位空格（见下方 append(' ')）让
-         * "上一行的行尾 offset"落到下一段首字符的视觉位置上，拖拽选择手柄越过行宽时会
-         * clamp 到下一行行首。修它需要重做段落承载方式（`\n` 参与换行 + ParagraphStyle
-         * 只作样式），不是改一两行能解决的。
-         */
-        /**
-         * v2026-09-15 **方案 D（最小验证）**：单普通段落块保留段内 `\n`（软换行），
-         * 不替换成空格。
-         *
-         * 为什么：`\n` 真实存在于文本层时，"行尾"才拥有**自己的 offset** —— 选择手柄
-         * 拖到行尾继续往右会停住，而不会 clamp 到下一段首字符（修"拖到行尾跳到下一行"）。
-         * 且此处的 `\n` 位于段落**内部**（不是段末），与 `ParagraphStyle` 的边界换行
-         * 是两套机制、**不会叠加**，因此不产生额外空行。
-         *
-         * 其余情况（列表 / 任务列表 / 多段落块）保持原行为（`\n`→空格 + 拆段）：
-         * 列表项的 bullet 与任务列表的勾选框需要独立段落承载。
+         * ZWSP 的归属：位于下一段落的开头（切分点之后），配合下方构建循环的
+         * `append(newText[index])`（段间取 newText 原字符）与 [computeTextFromTree]。
+         * App 侧 `effectiveText` 已剥 ZWSP，不污染字数统计与空行判定。
          */
         val newText =
-            if (singleParagraphMode || isSoftLineBreakBlock())
+            if (singleParagraphMode)
                 newTextFieldValue.text
             else
-                newTextFieldValue.text.replace('\n', ' ')
+                newTextFieldValue.text.replace('\n', '\u200B')
 
         val newStyledRichSpanList = mutableListOf<RichSpan>()
 
@@ -3122,17 +3108,15 @@ public class RichTextState internal constructor(
                         TextRange(index, index + richParagraphStartTextLength)
                     index += richParagraphStartTextLength
                     /**
-                     * v2026-09-15 方案 D'（v2）：**非首段**的段落开头写一个 ZWSP（零宽、占 offset）。
+                     * v2026-09-15 方案 D'（定稿）：**非首段**的段落开头追加文本层的分隔字符
+                     * （`\n` 已被替换为 ZWSP，见 [updateAnnotatedString] 的 newText）——
+                     * 取自 [newText] 的原字符，保证与文本层**逐一对应**。
                      *
                      * 目的：让"上一段的行尾"与"本段的开头"在 offset 上**分离**——手柄拖到
-                     * 上一行行尾时 clamp 到上一段末字符，**不会越过段落边界**跳到本段行首
-                     * （修「多段落块手柄拖到行尾跳到下一行」；v1 把占位放在上一段末尾，
-                     * clamp 会越过它落到本段首，实测仍跳行）。
-                     *
-                     * ZWSP 零宽：不产生空行 / 空格；App 侧 `effectiveText` 已剥 ZWSP。
+                     * 上一行行尾时 clamp 到上一段末字符，不越过段落边界。
                      */
-                    if (i > 0 && !singleParagraphMode) {
-                        append('\u200B')
+                    if (i > 0 && !singleParagraphMode && index < newText.length) {
+                        append(newText[index])
                         index++
                     }
                     /**
@@ -4050,11 +4034,11 @@ public class RichTextState internal constructor(
 
     private fun checkForParagraphs() {
         /**
-         * v2026-09-15 **方案 D（最小验证）**：单普通段落块里 `\n` 是段内软换行、不是新段落
-         * 分隔 —— 直接返回、不拆段（否则每次回车都会新增一段，段落数爆炸）。
+         * v2026-09-15 定稿：**回车拆段**（每行一个独立段落）—— 复选框 / 列表等段落级
+         * 操作由此获得**行粒度**。段间的分隔字符由 [updateAnnotatedString] 统一写入
+         * （`\n` 在文本层被替换为 ZWSP，归属下一段开头），手柄行尾归属见
+         * [isSoftLineBreakBlock] 与 [updateAnnotatedString] 的说明。
          */
-        if (isSoftLineBreakBlock()) return
-
         var index = tempTextFieldValue.text.lastIndex
 
         // Count newlines vs paragraph breaks to detect unprocessed newlines.
