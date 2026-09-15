@@ -2078,7 +2078,18 @@ public class RichTextState internal constructor(
     /** [setTaskListChecked] 的实际执行（不做历史记录，由调用方决定是否包裹 [recordHistory]） */
     private fun applySetTaskListChecked(checked: Boolean) {
         val paragraph = currentTaskListParagraph() ?: return
-        val type = paragraph.type as TaskList
+
+        applyTaskListCheckedOnParagraph(paragraph = paragraph, checked = checked)
+    }
+
+    /**
+     * 对**指定**任务列表段落就地换勾选态（选区版 [applySetTaskListChecked] 与点击命中版
+     * [toggleTaskListCheckedAtTextOffset] 共用）。
+     *
+     * 走 [updateParagraphType]：同步 marker 文本、缩进样式与光标，不经 markdown 往返。
+     */
+    private fun applyTaskListCheckedOnParagraph(paragraph: RichParagraph, checked: Boolean) {
+        val type = paragraph.type as? TaskList ?: return
 
         val newTextFieldValue = updateParagraphType(
             paragraph = paragraph,
@@ -2087,6 +2098,45 @@ public class RichTextState internal constructor(
             textFieldValue = textFieldValue,
         )
         updateTextFieldValue(newTextFieldValue)
+    }
+
+    /**
+     * 在指定文本偏移处切换任务列表项的勾选态（**勾选框点击入口**，v2026-09-15）。
+     *
+     * 命中判定：偏移所属段落是 `TaskList`，且偏移 ≤ 该段落 marker 的结束位置。
+     * 勾选框画在 marker 左侧的 TextIndent 预留区里，`getOffsetForPosition` 对那段空白
+     * 会 clamp 到段落起点，因此"点勾选框"与"点 marker 本身"都能命中；点在正文上
+     * （偏移 > marker 结束）不命中，交回调用方做普通光标定位（放行手势）。
+     *
+     * 命中即写入块内 history（可撤销），与"点击勾选属用户操作"的语义一致。
+     *
+     * @param offset 文本偏移（编辑态由 `TextLayoutResult.getOffsetForPosition` 换算得到）。
+     * @return true = 命中并已切换勾选态（调用方应消费该手势）；false = 未命中。
+     */
+    public fun toggleTaskListCheckedAtTextOffset(offset: Int): Boolean {
+        val paragraph = getRichParagraphByTextIndex(offset) ?: return false
+        val type = paragraph.type as? TaskList ?: return false
+
+        /** 落在正文里（marker 之后）的点击不算命中勾选框 */
+        if (offset > type.startRichSpan.textRange.end) return false
+
+        recordHistory(CommitTrigger.Structural) {
+            applyTaskListCheckedOnParagraph(paragraph = paragraph, checked = !type.checked)
+        }
+        return true
+    }
+
+    /**
+     * 段落正文的附加 SpanStyle（v2026-09-15）：任务列表**已勾选**段落的 children 整体
+     * 叠加 [RichTextConfig.taskListCheckedTextColor]（由 App 传 40% 透明色），承载
+     * "勾选后文字视觉降级"；其余情况返回 [RichSpanStyle.DefaultSpanStyle]（零副作用）。
+     */
+    private fun RichParagraph.taskListCheckedSpanStyle(config: RichTextConfig): SpanStyle {
+        val paragraphType = this.type
+        if (paragraphType !is TaskList || !paragraphType.checked) return RichSpanStyle.DefaultSpanStyle
+        if (config.taskListCheckedTextColor == Color.Unspecified) return RichSpanStyle.DefaultSpanStyle
+
+        return SpanStyle(color = config.taskListCheckedTextColor)
     }
 
     /**
@@ -3018,7 +3068,13 @@ public class RichTextState internal constructor(
                     richParagraph.type.startRichSpan.textRange =
                         TextRange(index, index + richParagraphStartTextLength)
                     index += richParagraphStartTextLength
-                    withStyle(RichSpanStyle.DefaultSpanStyle) {
+                    /**
+                     * 段落正文的附加样式（v2026-09-15）：任务列表**已勾选**段落的
+                     * children 整体叠加 [RichTextConfig.taskListCheckedTextColor]
+                     * （App 传 40% 透明色），实现"勾选后文字降级"——块内多行、部分勾选
+                     * 时也能逐段降级。非任务列表段落返回 [RichSpanStyle.DefaultSpanStyle]。
+                     */
+                    withStyle(richParagraph.taskListCheckedSpanStyle(config)) {
                         index = append(
                             state = this@RichTextState,
                             richSpanList = richParagraph.children,
@@ -5910,7 +5966,13 @@ public class RichTextState internal constructor(
                     richParagraph.type.startRichSpan.textRange =
                         TextRange(index, index + richParagraphStartTextLength)
                     index += richParagraphStartTextLength
-                    withStyle(RichSpanStyle.DefaultSpanStyle) {
+                    /**
+                     * 段落正文的附加样式（v2026-09-15）：任务列表**已勾选**段落的
+                     * children 整体叠加 [RichTextConfig.taskListCheckedTextColor]
+                     * （App 传 40% 透明色），实现"勾选后文字降级"——块内多行、部分勾选
+                     * 时也能逐段降级。非任务列表段落返回 [RichSpanStyle.DefaultSpanStyle]。
+                     */
+                    withStyle(richParagraph.taskListCheckedSpanStyle(config)) {
                         index = append(
                             state = this@RichTextState,
                             richSpanList = richParagraph.children,

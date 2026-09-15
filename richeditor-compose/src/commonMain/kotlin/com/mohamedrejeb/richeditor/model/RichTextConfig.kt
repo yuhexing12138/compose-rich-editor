@@ -72,6 +72,23 @@ public class RichTextConfig internal constructor(
         }
 
     /**
+     * 任务列表**已勾选段落**的正文文字颜色（v2026-09-15）。
+     *
+     * 用于承载"勾选后文字视觉降级"这一既有视觉（App 传 `onSurface.copy(alpha = 0.4f)`）：
+     * 库在重建 annotatedString 时，对 `TaskList` 且已勾选段落的 children 整体叠加该颜色，
+     * 因此**块内多行、部分勾选**时也能逐段降级（这是外层 textStyle 做不到的）。
+     *
+     * 默认 [Color.Unspecified] = 不改文字颜色（等价于不启用该特性）。
+     */
+    public var taskListCheckedTextColor: Color = Color.Unspecified
+        set(value) {
+            /** 值未变化时跳过重建，防御组合期重复设置（见类 KDoc）。 */
+            if (field == value) return
+            field = value
+            updateText()
+        }
+
+    /**
      * The indent for ordered lists.
      */
     public var orderedListIndent: Int = DefaultListIndent
