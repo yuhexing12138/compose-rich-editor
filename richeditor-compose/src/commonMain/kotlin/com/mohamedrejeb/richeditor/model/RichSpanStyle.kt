@@ -13,6 +13,8 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.isUnspecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -485,6 +487,166 @@ public interface RichSpanStyle {
             "Token(triggerId='$triggerId', id='$id', label='$label')"
     }
 
+    /**
+     * 段落级复选框（任务列表）标识的绘制样式（v2026-09-15 新增）。
+     *
+     * **用途**：作为 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 段落
+     * marker（`startRichSpan`）的 `richSpanStyle`。marker 文本本身是**不可见占位
+     * 字符**（NBSP，只用于占位宽与定位），真正的勾选框由 [drawCustomStyle] 按
+     * marker 的**排版位置**绘制。
+     *
+     * **为什么走绘制而不是 inlineContent**：编辑态是 BasicTextField，Compose
+     * Foundation 1.11 不支持 inlineContent（U+FFFD 占位符会被当普通字符画出来，
+     * 见 [Image] 的覆盖层注释）；而 [DrawScope.drawCustomStyle] 由
+     * `Modifier.drawRichSpanStyle` 在**编辑态与只读态都挂载**，因此同一套绘制
+     * 代码即可保证两端视觉一致，且勾选框跟随段落排版（折行、缩放）自动定位。
+     *
+     * **绘制规格**（与 App 侧 `CheckboxBoxIcon` 对齐）：
+     * - 未勾选 = 圆角方框描边（默认 1.5dp）；
+     * - 已勾选 = 实心填充 + 白色圆头对勾；
+     * - 方框边长/圆角/描边/配色全部可由调用方注入（App 传主题色）。
+     *
+     * ⚠️ [equals]/[hashCode] 必须包含 [checked]：库以样式对象相等性判断是否
+     * 需要刷新，漏掉勾选态会导致点击后画面不更新。
+     *
+     * **几何约定**：尺寸用 [TextUnit]（sp），与
+     * [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的 `TextIndent` 预留
+     * 宽度（即 `startTextWidth`）保持同一单位体系——段落 marker 被 `TextIndent`
+     * 推到「[size] + [gap]」之后，勾选框就画在 marker 左侧这段预留区里。
+     *
+     * @param checked 勾选态。
+     * @param size 方框边长（sp）。
+     * @param gap 勾选框与正文之间的间距（sp）。
+     * @param cornerRadius 方框圆角。
+     * @param strokeWidth 未勾选态描边宽度。
+     * @param checkmarkStrokeWidth 对勾线宽。
+     * @param checkedColor 勾选态填充色。
+     * @param uncheckedColor 未勾选态描边色。
+     * @param checkmarkColor 对勾颜色。
+     */
+    public class CheckBox(
+        public val checked: Boolean,
+        private val size: TextUnit = DefaultTaskListCheckBoxSize,
+        private val gap: TextUnit = DefaultTaskListCheckBoxGap,
+        private val cornerRadius: TextUnit = DefaultTaskListCheckBoxCornerRadius,
+        private val strokeWidth: TextUnit = DefaultTaskListCheckBoxStrokeWidth,
+        private val checkmarkStrokeWidth: TextUnit = DefaultTaskListCheckmarkStrokeWidth,
+        private val checkedColor: Color = DefaultTaskListCheckedColor,
+        private val uncheckedColor: Color = DefaultTaskListUncheckedColor,
+        private val checkmarkColor: Color = DefaultTaskListCheckmarkColor,
+    ) : RichSpanStyle {
+
+        /** 不参与文字外观（marker 是占位字符，视觉完全由 [drawCustomStyle] 负责） */
+        override val spanStyle: (RichTextConfig) -> SpanStyle =
+            { SpanStyle() }
+
+        /** marker 是段首固定标识：不允许在其边缘续写文本 */
+        override val acceptNewTextInTheEdges: Boolean = false
+
+        /** 原子单元：编辑操作不切入 marker 内部 */
+        override val isAtomic: Boolean = true
+
+        override fun DrawScope.drawCustomStyle(
+            layoutResult: TextLayoutResult,
+            textRange: TextRange,
+            richTextConfig: RichTextConfig,
+            topPadding: Float,
+            startPadding: Float,
+        ) {
+            /** 折叠 range（无占位字符）无法定位，直接跳过 */
+            if (textRange.collapsed) return
+
+            val box = layoutResult.getBoundingBoxes(
+                startOffset = textRange.start,
+                endOffset = textRange.end,
+                flattenForFullParagraphs = false,
+            ).firstOrNull() ?: return
+
+            val side = size.toPx()
+            /**
+             * marker 已被 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的
+             * TextIndent 推到「[size] + [gap]」之后，故勾选框画在 marker 左侧这段
+             * 预留区里：左缘 = marker 左缘 - 预留宽度。
+             */
+            val reserved = (size + gap).toPx()
+            val left = box.left - reserved + startPadding
+            /** 与 marker 所在行垂直居中（box 即该行的行盒） */
+            val top = box.top + topPadding + (box.height - side) / 2f
+            val radius = CornerRadius(cornerRadius.toPx())
+
+            /** 圆角方框路径（勾选/未勾选共用同一条路径，仅填充与描边不同） */
+            val framePath = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        left = left,
+                        top = top,
+                        right = left + side,
+                        bottom = top + side,
+                        topLeft = radius,
+                        topRight = radius,
+                        bottomRight = radius,
+                        bottomLeft = radius,
+                    )
+                )
+            }
+
+            if (checked) {
+                /** 勾选态：实心填充 + 白色圆头对勾 */
+                drawPath(path = framePath, color = checkedColor, style = Fill)
+
+                val checkPath = Path().apply {
+                    moveTo(left + side * 0.26f, top + side * 0.52f)
+                    lineTo(left + side * 0.44f, top + side * 0.70f)
+                    lineTo(left + side * 0.74f, top + side * 0.32f)
+                }
+                drawPath(
+                    path = checkPath,
+                    color = checkmarkColor,
+                    style = Stroke(
+                        width = checkmarkStrokeWidth.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+            } else {
+                /** 未勾选态：只描边 */
+                drawPath(
+                    path = framePath,
+                    color = uncheckedColor,
+                    style = Stroke(width = strokeWidth.toPx()),
+                )
+            }
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is CheckBox) return false
+
+            return checked == other.checked &&
+                size == other.size &&
+                gap == other.gap &&
+                cornerRadius == other.cornerRadius &&
+                strokeWidth == other.strokeWidth &&
+                checkmarkStrokeWidth == other.checkmarkStrokeWidth &&
+                checkedColor == other.checkedColor &&
+                uncheckedColor == other.uncheckedColor &&
+                checkmarkColor == other.checkmarkColor
+        }
+
+        override fun hashCode(): Int {
+            var result = checked.hashCode()
+            result = 31 * result + size.hashCode()
+            result = 31 * result + gap.hashCode()
+            result = 31 * result + cornerRadius.hashCode()
+            result = 31 * result + strokeWidth.hashCode()
+            result = 31 * result + checkmarkStrokeWidth.hashCode()
+            result = 31 * result + checkedColor.hashCode()
+            result = 31 * result + uncheckedColor.hashCode()
+            result = 31 * result + checkmarkColor.hashCode()
+            return result
+        }
+    }
+
     public data object Default : RichSpanStyle {
         override val spanStyle: (RichTextConfig) -> SpanStyle =
             { SpanStyle() }
@@ -505,3 +667,22 @@ public interface RichSpanStyle {
         internal val DefaultSpanStyle = SpanStyle()
     }
 }
+
+/**
+ * 任务列表勾选框默认规格（v2026-09-15）。
+ *
+ * 与 App 侧 `CheckboxBoxIcon` 的视觉规格对齐：边长 18 / 圆角 5 的方框、
+ * 未勾选 1.5 描边、对勾线宽 2、勾选框与正文间距 8（单位 sp，数值与 App 的
+ * dp 规格一致）；配色为中性默认值，App 会按主题色注入覆盖。
+ *
+ * 可见性为 `internal`：同模块的 [com.mohamedrejeb.richeditor.paragraph.type.TaskList]
+ * 需要复用同一套默认规格，避免两处各写一份常量。
+ */
+internal val DefaultTaskListCheckBoxSize = 18.sp
+internal val DefaultTaskListCheckBoxGap = 8.sp
+internal val DefaultTaskListCheckBoxCornerRadius = 5.sp
+internal val DefaultTaskListCheckBoxStrokeWidth = 1.5.sp
+internal val DefaultTaskListCheckmarkStrokeWidth = 2.sp
+internal val DefaultTaskListCheckedColor = Color(0xFF4C9AFF)
+internal val DefaultTaskListUncheckedColor = Color(0xFF8A8A8E)
+internal val DefaultTaskListCheckmarkColor = Color.White

@@ -34,6 +34,26 @@ internal fun Modifier.drawRichSpanStyle(
                     styledRichSpanList.add(richSpan.richSpanStyle to TextRange(richSpan.textRange.start, end))
             }
 
+            /**
+             * 段落 marker 的绘制调度（v2026-09-15 新增）。
+             *
+             * [richTextState.styledRichSpanList] 只收集**段落 children**，不含
+             * `paragraph.type.startRichSpan`——在 `RichTextState.updateAnnotatedString`
+             * 里 marker 文本是直接 `append(type.startText)` 进文本的（只带 SpanStyle，
+             * 不走 richSpan 的收集回调）。因此挂在 marker 上的自定义样式
+             * （当前用于 TaskList 段落的勾选框 [RichSpanStyle.CheckBox]）需要在这里
+             * 单独补一遍，否则不会被 `drawCustomStyle` 调用到。
+             *
+             * 追加在 children 之后：marker 属于段首标识，视觉上应画在最上层。
+             */
+            richTextState.richParagraphList.fastForEach { paragraph ->
+                val startRichSpan = paragraph.type.startRichSpan
+                val markerStyle = startRichSpan.richSpanStyle
+                if (markerStyle !is RichSpanStyle.Default) {
+                    styledRichSpanList.add(markerStyle to startRichSpan.textRange)
+                }
+            }
+
             styledRichSpanList.fastForEach { (style, textRange) ->
                 richTextState.textLayoutResult?.let { textLayoutResult ->
                     with(style) {

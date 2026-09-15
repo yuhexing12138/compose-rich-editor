@@ -826,7 +826,17 @@ public class RichTextState internal constructor(
         private set
     public var isOrderedList: Boolean by mutableStateOf(currentRichParagraphType is OrderedList)
         private set
-    public var isList: Boolean by mutableStateOf(isUnorderedList || isOrderedList)
+
+    /**
+     * 当前段落是否为任务列表项（v2026-09-15）。
+     *
+     * 任务列表与有序/无序列表并列为**独立段落类型**，故单列一个状态：工具栏或
+     * 调用方需要区分"复选框项"时读本状态；[isList] 会把三者统一视为"列表"。
+     */
+    public var isTaskList: Boolean by mutableStateOf(currentRichParagraphType is TaskList)
+        private set
+
+    public var isList: Boolean by mutableStateOf(isUnorderedList || isOrderedList || isTaskList)
         private set
     public var canIncreaseListLevel: Boolean by mutableStateOf(false)
         private set
@@ -1682,6 +1692,74 @@ public class RichTextState internal constructor(
     }
 
     /**
+     * 把当前段落设为**任务列表项**（v2026-09-15）。
+     *
+     * 与 [addUnorderedList] 同款：直接改段落类型（[updateParagraphType] 会同步 marker
+     * 文本、缩进样式并自动校正光标），markdown 持久化由 `- [ ] ` 前缀承载。
+     *
+     * 语义细节：
+     * - 新加的任务列表项一律**未勾选**（复选框的自然默认值）；
+     * - 原段落若已带列表层级（实现 [ConfigurableListLevel]），层级随迁，保持缩进观感；
+     * - 已是任务列表项的段落跳过（幂等）。
+     *
+     * @param commitHistory 是否写入块内 history（true = 用户操作、可撤销）。
+     */
+    public fun setTaskList(commitHistory: Boolean = true) {
+        recordHistory(CommitTrigger.Structural, enabled = commitHistory) {
+            val paragraphs = getRichParagraphListByTextRange(selection)
+
+            paragraphs.fastForEach { paragraph ->
+                val type = paragraph.type
+                if (type is TaskList) return@fastForEach
+
+                val newType = if (type is ConfigurableListLevel) {
+                    TaskList(initialLevel = type.level, checked = false)
+                } else {
+                    TaskList(checked = false)
+                }
+
+                updateParagraphType(paragraph = paragraph, newType = newType)
+            }
+        }
+    }
+
+    /**
+     * 取消当前段落的**任务列表**（还原为普通段落，v2026-09-15）。
+     *
+     * @param commitHistory 是否写入块内 history（true = 用户操作、可撤销）。
+     */
+    public fun removeTaskList(commitHistory: Boolean = true) {
+        recordHistory(CommitTrigger.Structural, enabled = commitHistory) {
+            val paragraphs = getRichParagraphListByTextRange(selection)
+
+            paragraphs.fastForEach { paragraph ->
+                if (paragraph.type !is TaskList) return@fastForEach
+
+                updateParagraphType(paragraph = paragraph, newType = DefaultParagraph())
+            }
+        }
+    }
+
+    /**
+     * 在「任务列表项」与「普通段落」之间切换（工具栏"复选框"按钮入口，v2026-09-15）。
+     *
+     * 判定以**首个选中段落**的类型为准（与 [toggleUnorderedList] 口径一致），
+     * 多段落选区会被统一处理。
+     *
+     * @param commitHistory 是否写入块内 history（true = 用户操作、可撤销）。
+     */
+    public fun toggleTaskList(commitHistory: Boolean = true) {
+        val paragraphs = getRichParagraphListByTextRange(selection)
+        val isTaskList = paragraphs.firstOrNull()?.type is TaskList
+
+        if (isTaskList) {
+            removeTaskList(commitHistory = commitHistory)
+        } else {
+            setTaskList(commitHistory = commitHistory)
+        }
+    }
+
+    /**
      * Increase the level of the current selected lists.
      *
      * If the current selection is not a list, this method does nothing.
@@ -1952,6 +2030,71 @@ public class RichTextState internal constructor(
             textFieldValue = textFieldValue,
         )
         updateTextFieldValue(newTextFieldValue)
+    }
+
+    /**
+     * 设置当前段落的**任务列表勾选态**（v2026-09-15）。
+     *
+     * 与 [setListMarker] 同款设计：直接改段落类型（[updateParagraphType] 会同步
+     * marker 文本、缩进样式并自动校正光标），**完全不经 markdown 解析**——GFM 前缀
+     * `- [ ] ` / `- [x] ` 只在持久化时往返（见
+     * [com.mohamedrejeb.richeditor.parser.markdown.RichTextStateMarkdownParser]）。
+     *
+     * 仅作用于任务列表段落（`TaskList`），其它段落类型 no-op。
+     *
+     * @param checked 目标勾选态。
+     * @param commitHistory 是否写入块内 history（true = 用户点击、可撤销；
+     *  false = 程序性重建，不产生撤销步）。
+     */
+    public fun setTaskListChecked(
+        checked: Boolean,
+        commitHistory: Boolean = true,
+    ) {
+        recordHistory(CommitTrigger.Structural, enabled = commitHistory) {
+            applySetTaskListChecked(checked = checked)
+        }
+    }
+
+    /**
+     * 取反当前段落的勾选态（点击勾选框的入口）。非任务列表段落 no-op。
+     *
+     * @param commitHistory 是否写入块内 history（见 [setTaskListChecked]）。
+     */
+    public fun toggleTaskListChecked(commitHistory: Boolean = true) {
+        val paragraph = currentTaskListParagraph() ?: return
+        val type = paragraph.type as TaskList
+
+        setTaskListChecked(
+            checked = !type.checked,
+            commitHistory = commitHistory,
+        )
+    }
+
+    /** [setTaskListChecked] 的实际执行（不做历史记录，由调用方决定是否包裹 [recordHistory]） */
+    private fun applySetTaskListChecked(checked: Boolean) {
+        val paragraph = currentTaskListParagraph() ?: return
+        val type = paragraph.type as TaskList
+
+        val newTextFieldValue = updateParagraphType(
+            paragraph = paragraph,
+            /** 就地换类型：层级、marker 宽度与勾选框外观全部保留（见 TaskList.withChecked） */
+            newType = type.withChecked(checked = checked),
+            textFieldValue = textFieldValue,
+        )
+        updateTextFieldValue(newTextFieldValue)
+    }
+
+    /**
+     * 当前选区所在的任务列表段落（无选区时退化为首段）；非任务列表段落返回 null
+     * （调用方据此 no-op，与 [setListMarker] 的"非列表不处理"口径一致）。
+     */
+    private fun currentTaskListParagraph(): RichParagraph? {
+        val paragraphs = getRichParagraphListByTextRange(selection)
+        val paragraph = paragraphs.firstOrNull()
+            ?: richParagraphList.firstOrNull()
+            ?: return null
+
+        return paragraph.takeIf { it.type is TaskList }
     }
 
     /**
@@ -3623,7 +3766,11 @@ public class RichTextState internal constructor(
                     levelNumberMap.remove(level)
             }
 
-            if (currentParagraphType is UnorderedList) {
+            /**
+             * 无序类列表项（无序列表 / 任务列表，v2026-09-15 纳入任务列表）：
+             * 该层级不参与有序编号，重置计数后继续向后传播。
+             */
+            if (currentParagraphType is UnorderedList || currentParagraphType is TaskList) {
                 levelNumberMap[currentParagraphType.level] = 0
                 continue
             }
@@ -3710,7 +3857,8 @@ public class RichTextState internal constructor(
             }
 
             // Remove current list level from map if the current paragraph is an unordered list
-            if (currentParagraphType is UnorderedList)
+            // (task list items behave the same way, v2026-09-15)
+            if (currentParagraphType is UnorderedList || currentParagraphType is TaskList)
                 levelNumberMap.remove(currentParagraphType.level)
 
             if (currentParagraphType is OrderedList) {
@@ -3736,10 +3884,16 @@ public class RichTextState internal constructor(
                 )
             }
 
-            if (
-                currentParagraphType !is ConfigurableListLevel ||
-                (currentParagraphType is UnorderedList && currentParagraphType.level == 1)
-            ) {
+            /**
+             * 无序类列表的**一级项**（无序列表 / 任务列表，v2026-09-15 纳入任务列表）：
+             * 编号传播到此结束。
+             */
+            val isUnorderedLikeListAtFirstLevel =
+                currentParagraphType is ConfigurableListLevel &&
+                    currentParagraphType !is OrderedList &&
+                    currentParagraphType.level == 1
+
+            if (currentParagraphType !is ConfigurableListLevel || isUnorderedLikeListAtFirstLevel) {
                 // Break if we reach the end paragraph index
                 if (i >= endParagraphIndex)
                     break
@@ -4764,7 +4918,8 @@ public class RichTextState internal constructor(
                         ?: RichParagraph.DefaultParagraphStyle
             isUnorderedList = richParagraph?.type is UnorderedList
             isOrderedList = richParagraph?.type is OrderedList
-            isList = isUnorderedList || isOrderedList
+            isTaskList = richParagraph?.type is TaskList
+            isList = isUnorderedList || isOrderedList || isTaskList
             canIncreaseListLevel = richParagraph?.let { canIncreaseListLevel(listOf(it)) } == true
             canDecreaseListLevel = richParagraph?.let { canDecreaseListLevel(listOf(it)) } == true
         } else {
@@ -4779,7 +4934,10 @@ public class RichTextState internal constructor(
 
             isUnorderedList = richParagraphList.all { it.type is UnorderedList }
             isOrderedList = richParagraphList.all { it.type is OrderedList }
-            isList = richParagraphList.all { it.type is UnorderedList || it.type is OrderedList }
+            isTaskList = richParagraphList.all { it.type is TaskList }
+            isList = richParagraphList.all {
+                it.type is UnorderedList || it.type is OrderedList || it.type is TaskList
+            }
             canIncreaseListLevel = canIncreaseListLevel(richParagraphList)
             canDecreaseListLevel = canDecreaseListLevel(richParagraphList)
         }

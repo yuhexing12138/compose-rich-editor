@@ -19,6 +19,7 @@ import com.mohamedrejeb.richeditor.paragraph.type.ConfigurableListLevel
 import com.mohamedrejeb.richeditor.paragraph.type.DefaultParagraph
 import com.mohamedrejeb.richeditor.paragraph.type.OrderedList
 import com.mohamedrejeb.richeditor.paragraph.type.ParagraphType
+import com.mohamedrejeb.richeditor.paragraph.type.TaskList
 import com.mohamedrejeb.richeditor.paragraph.type.UnorderedList
 import com.mohamedrejeb.richeditor.parser.RichTextStateParser
 import com.mohamedrejeb.richeditor.parser.html.BrElement
@@ -54,6 +55,13 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
          * EM 前缀只出现在源段落首行行首，故只需处理起始段落。
          */
         var plainIndentParagraphStartIndex = -1
+
+        /**
+         * 任务列表前缀解码（v2026-09-15）：当前 LIST_ITEM 对应的段落 index
+         * （onOpenNode(LIST_ITEM) 命中 `[ ] `/`[x] ` 前缀时记录，
+         * onCloseNode(LIST_ITEM) 时把该前缀从正文中剥除并复位 -1）。
+         */
+        var taskListParagraphStartIndex = -1
 
         fun onAddLineBreak() {
             val lastParagraph = richParagraphList.lastOrNull()
@@ -205,6 +213,25 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                             )
                         }
 
+                        /**
+                         * 任务列表项判定（v2026-09-15）：解析器（intellij-markdown 的 GFM
+                         * flavour）**不产出 task-list 节点**，`- [ ] a` 只会被解析成普通
+                         * 无序列表项，故只能按**源码前缀**识别（与 App 侧原有的 checkbox
+                         * 文本前缀约定一致）。命中时把段落类型换成 [TaskList]——勾选态存入
+                         * 类型，前缀文本随后在 LIST_ITEM 关闭时从正文中剥除。
+                         */
+                        val taskListChecked = parseTaskListCheckboxState(
+                            markdown = correctedMarkdown,
+                            listItemNode = node,
+                        )
+                        if (taskListChecked != null) {
+                            currentRichParagraphType = TaskList(
+                                initialLevel = sourceIndentLevel,
+                                checked = taskListChecked,
+                            )
+                            taskListParagraphStartIndex = richParagraphList.lastIndex
+                        }
+
                         currentRichParagraph.type = currentRichParagraphType
                     }
 
@@ -296,6 +323,19 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
                 if (node.type == MarkdownElementTypes.LIST_ITEM) {
                     currentListLevel--
+
+                    /**
+                     * 任务列表前缀剥除（v2026-09-15）：勾选态已由 [TaskList] 段落类型
+                     * 承载，`[ ] `/`[x] ` 这段源码前缀不能留在正文文本里。
+                     */
+                    if (taskListParagraphStartIndex >= 0) {
+                        richParagraphList.getOrNull(taskListParagraphStartIndex)?.let { paragraph ->
+                            if (paragraph.type is TaskList) {
+                                stripTaskListPrefix(paragraph)
+                            }
+                        }
+                        taskListParagraphStartIndex = -1
+                    }
                 }
 
                 /**
@@ -570,8 +610,15 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         return correctMarkdownText(builder.toString())
     }
 
+    /**
+     * 是否为列表类段落（v2026-09-15：任务列表与有序/无序列表同族）。
+     *
+     * 用途：markdown 编码时判断「非列表段落 → 列表段落」的边界，需要按 CommonMark
+     * 规则补一个空行——否则紧跟在非空段落下的 `-` 会被解析成 setext H2 下划线，
+     * 段落被吃掉（见 #441）。
+     */
     private fun ParagraphType.isList(): Boolean =
-        this is OrderedList || this is UnorderedList
+        this is OrderedList || this is UnorderedList || this is TaskList
 
     @OptIn(ExperimentalRichTextApi::class)
     private fun decodeRichSpanToMarkdown(
@@ -728,6 +775,20 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                 append("  ".repeat(type.level - 1) + "- ")
 
             /**
+             * 任务列表（v2026-09-15）：输出 GFM 任务列表前缀，勾选态随前缀往返
+             * （`- [x] ` = 已勾选 / `- [ ] ` = 未勾选）。层级仍按每级 2 空格编码，
+             * 与列表一致；解码端由 `[ ] `/`[x] ` 前缀识别为 [TaskList]。
+             *
+             * 该格式与 App 侧复选框块原有的输出**完全一致**，因此存量笔记
+             * 无需迁移即可被解析回任务列表段落。
+             */
+            is TaskList ->
+                append(
+                    "  ".repeat(type.level - 1) +
+                        if (type.checked) "- [x] " else "- [ ] "
+                )
+
+            /**
              * 纯文本整段缩进（v2026-09-07）：level>1 时输出段首 EM 前缀（每级 2 个），
              * 供解码端（[encode] 的 PARAGRAPH 关闭钩子）还原 [DefaultParagraph.level]。
              * level=1（无缩进）不输出前缀，与旧行为完全一致。
@@ -740,6 +801,64 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                 Unit
         }
     }
+
+    /**
+     * 从 LIST_ITEM 源码判定 GFM 任务列表勾选态（v2026-09-15）。
+     *
+     * intellij-markdown 的 GFM flavour **不产出 task-list 节点**，`- [ ] a` 只会被
+     * 解析成普通无序列表项，因此只能按**源文本前缀**识别（与 App 侧原有的 checkbox
+     * 前缀约定一致，故存量数据天然兼容）。
+     *
+     * @param markdown 当前用于解析的源文本。
+     * @param listItemNode LIST_ITEM 节点。
+     * @return true = `[x]`（已勾选）；false = `[ ]`（未勾选）；null = 不是任务列表项。
+     */
+    private fun parseTaskListCheckboxState(
+        markdown: String,
+        listItemNode: ASTNode,
+    ): Boolean? {
+        val itemText = listItemNode.getTextInNode(markdown).toString()
+        val stateChar = TaskListItemSourceRegex.find(itemText)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return null
+
+        return stateChar.equals("x", ignoreCase = true)
+    }
+
+    /**
+     * 剥除任务列表项的 `[ ] `/`[x] ` 正文前缀（v2026-09-15）。
+     *
+     * 勾选态已由 [TaskList] 段落类型承载，这段源码前缀不能留在正文里。剥除方式与
+     * [PLAIN_INDENT_CHAR] 前缀同款：前缀是连续源文本前缀，必落在首个非空文本 span
+     * 开头，单 span 剥除安全；剥空则从树上移除（保持结构干净）。
+     */
+    private fun stripTaskListPrefix(paragraph: RichParagraph) {
+        val firstTextSpan = paragraph.findFirstTextSpan() ?: return
+        val match = TaskListContentPrefixRegex.find(firstTextSpan.text) ?: return
+
+        firstTextSpan.text = firstTextSpan.text.substring(match.range.last + 1)
+
+        if (firstTextSpan.text.isEmpty()) {
+            val parent = firstTextSpan.parent
+            if (parent != null)
+                parent.children.remove(firstTextSpan)
+            else
+                paragraph.children.remove(firstTextSpan)
+        }
+    }
+
+    /**
+     * 任务列表项**源码**前缀：行首（可选列表 marker）后的 `[ ] ` / `[x] ` / `[X] `，
+     * 捕获组 1 为勾选字符。
+     */
+    private val TaskListItemSourceRegex = Regex("""^[ \t]*(?:[-*+][ \t]+)?\[([ xX])\][ \t]+""")
+
+    /**
+     * 任务列表项**正文**前缀：列表 marker 由段落 startText 机制承载、不进 children
+     * 文本，但这里仍多兼容一层 marker 形式，避免异常数据下残留字面量。
+     */
+    private val TaskListContentPrefixRegex = Regex("""^[ \t]*(?:[-*+][ \t]+)?\[[ xX]\][ \t]?""")
 
     /**
      * Encodes Markdown elements to [SpanStyle].
