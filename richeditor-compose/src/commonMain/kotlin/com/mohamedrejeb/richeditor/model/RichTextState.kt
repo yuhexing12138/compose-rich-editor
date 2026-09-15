@@ -3107,15 +3107,14 @@ public class RichTextState internal constructor(
                         TextRange(index, index + richParagraphStartTextLength)
                     index += richParagraphStartTextLength
                     /**
-                     * v2026-09-15 方案 D'（定稿）：**非首段**的段落开头追加文本层的分隔字符
-                     * （`\n` 已被替换为 ZWSP，见 [updateAnnotatedString] 的 newText）——
-                     * 取自 [newText] 的原字符，保证与文本层**逐一对应**。
-                     *
-                     * 目的：让"上一段的行尾"与"本段的开头"在 offset 上**分离**——手柄拖到
-                     * 上一行行尾时 clamp 到上一段末字符，不越过段落边界。
+                     * 段落之间的**占位空格**（v2026-09-15 定稿）：让"末字符可选"（原注释：
+                     * 修 Compose 多段落末字符不可选）。已知副作用：占位使"上一段的行尾
+                     * offset"落到下一段首字符的视觉位置上，**多段落块（列表/任务列表）的
+                     * 手柄拖到行尾会跳行**——TaskList 块已改为行级渲染（勾选框按段内
+                     * `\n` 分行、状态行级），普通单段落块无段间占位、不受影响。
                      */
-                    if (i > 0 && !singleParagraphMode && index < newText.length) {
-                        append(newText[index])
+                    if (i != richParagraphList.lastIndex && index < newText.length) {
+                        append(' ')
                         index++
                     }
                     /**
@@ -3725,8 +3724,9 @@ public class RichTextState internal constructor(
             append(paragraph.type.startRichSpan.text)
             paragraph.children.fastForEach { appendSpanText(it) }
             if (!singleParagraphMode && index != richParagraphList.lastIndex) {
-                /** v2026-09-15 实验：与 [updateAnnotatedString] 一致，段落间用真实 `\n` */
-                append('\n')
+                /** v2026-09-15：与 [updateAnnotatedString] 一致，段落间用占位空格 */
+                append(' ')
+            }
             }
         }
     }
@@ -4033,11 +4033,13 @@ public class RichTextState internal constructor(
 
     private fun checkForParagraphs() {
         /**
-         * v2026-09-15 定稿：**回车拆段**（每行一个独立段落）—— 复选框 / 列表等段落级
-         * 操作由此获得**行粒度**。段间的分隔字符由 [updateAnnotatedString] 统一写入
-         * （`\n` 在文本层被替换为 ZWSP，归属下一段开头），手柄行尾归属见
-         * [isSoftLineBreakBlock] 与 [updateAnnotatedString] 的说明。
+         * v2026-09-15 定稿（TaskList 行级渲染配套）：**软换行块不拆段**——
+         * - 单普通段落块：`\n` 是段内软换行（TaskList 行级渲染按 `\n` 分行 ✅）；
+         * - TaskList 块：勾选框按段内 `\n` 分行绘制、勾选状态行级存储。
+         * 含列表段落（`UnorderedList` / `OrderedList`）的块照常拆段。
          */
+        if (isSoftLineBreakBlock() || richParagraphList.any { it.type is TaskList }) return
+
         var index = tempTextFieldValue.text.lastIndex
 
         // Count newlines vs paragraph breaks to detect unprocessed newlines.
