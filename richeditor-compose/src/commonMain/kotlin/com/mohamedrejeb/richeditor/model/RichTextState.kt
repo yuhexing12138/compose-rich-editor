@@ -3122,6 +3122,20 @@ public class RichTextState internal constructor(
                         TextRange(index, index + richParagraphStartTextLength)
                     index += richParagraphStartTextLength
                     /**
+                     * v2026-09-15 方案 D'（v2）：**非首段**的段落开头写一个 ZWSP（零宽、占 offset）。
+                     *
+                     * 目的：让"上一段的行尾"与"本段的开头"在 offset 上**分离**——手柄拖到
+                     * 上一行行尾时 clamp 到上一段末字符，**不会越过段落边界**跳到本段行首
+                     * （修「多段落块手柄拖到行尾跳到下一行」；v1 把占位放在上一段末尾，
+                     * clamp 会越过它落到本段首，实测仍跳行）。
+                     *
+                     * ZWSP 零宽：不产生空行 / 空格；App 侧 `effectiveText` 已剥 ZWSP。
+                     */
+                    if (i > 0 && !singleParagraphMode) {
+                        append('\u200B')
+                        index++
+                    }
+                    /**
                      * 段落正文的附加样式（v2026-09-15）：任务列表**已勾选**段落的
                      * children 整体叠加 [RichTextConfig.taskListCheckedTextColor]
                      * （App 传 40% 透明色），实现"勾选后文字降级"——块内多行、部分勾选
@@ -3138,26 +3152,6 @@ public class RichTextState internal constructor(
                                 newStyledRichSpanList.add(it)
                             },
                         )
-
-                        if (!singleParagraphMode) {
-                            /**
-                             * 段落之间的**占位空格**（v2026-09-15 定稿）。
-                             *
-                             * 为什么必须是有宽度的空格：方案 D 定稿为「普通段落块 = 单段落 +
-                             * 段内 `\n`」，多段落块（列表 / 任务列表）的段间需要一个占位让
-                             * "末字符可选"。曾实验的 `\n`（段间空行 ❌）/ ZWSP（手柄跳行 ❌）/
-                             * 不写（offset 重合跳行 ❌）均不可用，结论见 [isSoftLineBreakBlock]。
-                             *
-                             * 已知副作用（原注释）：本占位空格使"上一行的行尾 offset"落到下一
-                             * 段首字符的视觉位置上，拖拽选择手柄越过行宽时会 clamp 到下一行
-                             * 行首——**多段落块（列表 / 任务列表）的手柄行为受此影响**；普通
-                             * 单段落块无段间占位、不受影响。
-                             */
-                            if (i != richParagraphList.lastIndex && index < newText.length) {
-                                append(' ')
-                                index++
-                            }
-                        }
                     }
                 }
             }
