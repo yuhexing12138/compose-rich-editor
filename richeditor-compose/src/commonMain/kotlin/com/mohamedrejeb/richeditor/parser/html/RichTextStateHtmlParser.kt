@@ -643,13 +643,20 @@ internal object RichTextStateHtmlParser : RichTextStateParser<String> {
         }
 
         // Append text, entity-encoding a leading space that follows a collapsible one.
+        //
+        // v2026-09-15 方案 D（配套）：段内 `\n` 输出为 `<br>` —— HTML 里源码换行只是空白
+        // （解析端会折叠成空格），`<br>` 才是"段内换行"的载体；保证
+        // 复制（`toHtml` → `<br>`）→ 粘贴（`<br>` → 段内 `\n`）往返后软换行得以保留。
+        // ⚠️ 必须先做 HTML 转义、再把 `\n` 替换成 `<br>`，否则 `<br>` 会被转义掉。
         val rawText = richSpan.text
-        val encodedText = encodeHtmlText(rawText).let {
-            if (textContext.afterCollapsibleSpace && it.startsWith(' '))
-                "&#32;" + it.substring(1)
-            else
-                it
-        }
+        val encodedText = encodeHtmlText(rawText)
+            .replace("\n", "<br>")
+            .let {
+                if (textContext.afterCollapsibleSpace && it.startsWith(' '))
+                    "&#32;" + it.substring(1)
+                else
+                    it
+            }
         if (rawText.isNotEmpty()) {
             textContext.afterCollapsibleSpace = rawText.endsWith(' ')
         }
