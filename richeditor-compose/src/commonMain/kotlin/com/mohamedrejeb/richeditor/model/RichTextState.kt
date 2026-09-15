@@ -3060,22 +3060,21 @@ public class RichTextState internal constructor(
      */
     internal fun updateAnnotatedString(newTextFieldValue: TextFieldValue = textFieldValue) {
         /**
-         * v2026-09-15 定稿：`\n` 在文本层**替换为 ZWSP**（U+200B，零宽、占 offset）。
+         * v2026-09-15：`\n` 在文本层**替换为占位空格**（段落分隔的载体）。
          *
-         * 为什么不是"保留 `\n`"：`\n` 会与 ParagraphStyle 边界的换行**叠加**产生空行
-         * （实测）。ZWSP 零宽、不换行，仅用于在段落边界处**占住一个 offset**，让
-         * "上一段的行尾"与"下一段的开头"在 offset 上分离——选择手柄拖到行尾 clamp
-         * 时停在上一段末，**不会越过段落边界跳到下一行**。
+         * 占位空格的代价：它使"上一段的行尾 offset"落到下一段首字符的视觉位置上，
+         * 多段落块（列表 / 任务列表）的选择手柄拖到行尾会 clamp 到下一行行首（跳行）
+         * ——实测矩阵中已确认这是**当前架构下的已知限制**（详见
+         * `isSoftLineBreakBlock` 的 KDoc：手柄行尾归属与复选框行粒度不可兼得）。
          *
-         * ZWSP 的归属：位于下一段落的开头（切分点之后），配合下方构建循环的
-         * `append(newText[index])`（段间取 newText 原字符）与 [computeTextFromTree]。
-         * App 侧 `effectiveText` 已剥 ZWSP，不污染字数统计与空行判定。
+         * 不可用替代：保留 `\n`（与段落边界叠加产生空行 ❌）、ZWSP（手柄跳行 ❌）、
+         * 不写（offset 重合跳行 ❌）。
          */
         val newText =
             if (singleParagraphMode)
                 newTextFieldValue.text
             else
-                newTextFieldValue.text.replace('\n', '\u200B')
+                newTextFieldValue.text.replace('\n', ' ')
 
         val newStyledRichSpanList = mutableListOf<RichSpan>()
 
