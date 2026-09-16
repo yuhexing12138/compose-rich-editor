@@ -63,6 +63,14 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
          */
         var taskListParagraphStartIndex = -1
 
+        /**
+         * 任务列表**续行**剥除（v2026-09-16 行级渲染）：续行 LIST_ITEM 对应的段落
+         * （onOpenNode 命中续行分支时记录，onCloseNode 时把该行前缀从**该行首 span**
+         * 中剥除并复位 null）。与 [taskListParagraphStartIndex] 互斥：首行走 index
+         * 路径（首个文本 span），续行走本路径（段落 children 的最后一个 span）。
+         */
+        var taskListContinuationParagraph: RichParagraph? = null
+
         fun onAddLineBreak() {
             val lastParagraph = richParagraphList.lastOrNull()
             val beforeLastParagraph = richParagraphList.getOrNull(richParagraphList.lastIndex - 1)
@@ -225,17 +233,37 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                          * 无序列表项，故只能按**源码前缀**识别（与 App 侧原有的 checkbox
                          * 文本前缀约定一致）。命中时把段落类型换成 [TaskList]——勾选态存入
                          * 类型，前缀文本随后在 LIST_ITEM 关闭时从正文中剥除。
+                         *
+                         * v2026-09-16 行级渲染：**续行合并**——上一段落已是**同层级**
+                         * [TaskList] 且未被分段隔开（EOL 分段的 mergeTaskLine 保证任务行
+                         * 之间不分段）时，本行是同一任务列表段落的下一行：不改段类型
+                         * （避免覆盖行 0 的勾选态），把本行勾选态按**行号**（段文本已累计
+                         * 的 `\n` 数）写入 [TaskList.checkedLines]，前缀随后在 LIST_ITEM
+                         * 关闭时从该行首 span 中剥除（[stripTaskListLinePrefix]）。
                          */
                         val taskListChecked = parseTaskListCheckboxState(
                             markdown = correctedMarkdown,
                             listItemNode = node,
                         )
                         if (taskListChecked != null) {
-                            currentRichParagraphType = TaskList(
-                                initialLevel = sourceIndentLevel,
-                                checked = taskListChecked,
-                            )
-                            taskListParagraphStartIndex = richParagraphList.lastIndex
+                            val lastParagraph = richParagraphList.lastOrNull()
+                            val lastType = lastParagraph?.type as? TaskList
+                            if (
+                                lastType != null &&
+                                lastType.level == sourceIndentLevel &&
+                                currentRichParagraph === lastParagraph
+                            ) {
+                                val lineIndex = countParagraphNewlines(lastParagraph)
+                                lastType.setLineChecked(line = lineIndex, checked = taskListChecked)
+                                currentRichParagraphType = lastType
+                                taskListContinuationParagraph = lastParagraph
+                            } else {
+                                currentRichParagraphType = TaskList(
+                                    initialLevel = sourceIndentLevel,
+                                    checked = taskListChecked,
+                                )
+                                taskListParagraphStartIndex = richParagraphList.lastIndex
+                            }
                         }
 
                         currentRichParagraph.type = currentRichParagraphType
@@ -333,6 +361,9 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                     /**
                      * 任务列表前缀剥除（v2026-09-15）：勾选态已由 [TaskList] 段落类型
                      * 承载，`[ ] `/`[x] ` 这段源码前缀不能留在正文文本里。
+                     * v2026-09-16 行级渲染：续行行（合并进单段落）的前缀落在该行首
+                     * span（段落 children 最后一个 span，PARAGRAPH open 创建、前缀
+                     * tokens 累积其中），由 [stripTaskListLinePrefix] 剥除。
                      */
                     if (taskListParagraphStartIndex >= 0) {
                         richParagraphList.getOrNull(taskListParagraphStartIndex)?.let { paragraph ->
@@ -341,6 +372,9 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                             }
                         }
                         taskListParagraphStartIndex = -1
+                    } else if (taskListContinuationParagraph != null) {
+                        stripTaskListLinePrefix(taskListContinuationParagraph!!)
+                        taskListContinuationParagraph = null
                     }
                 }
 
@@ -427,28 +461,75 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                         i < correctedMarkdown.length && correctedMarkdown[i] == '\n'
                     }
 
-                    if (
-                        isParagraphBreak &&
-                        (
-                            lastParagraph?.isNotEmpty() == true ||
-                                beforeLastParagraph?.isNotEmpty() == true ||
-                                lastBrParagraphIndex == richParagraphList.lastIndex ||
-                                beforeLastBrParagraphIndex == richParagraphList.lastIndex - 1
-                            )
-                    ) {
+                    /**
+                     * v2026-09-16 TaskList 行级渲染（配套）：**列表项行**的分段规则。
+                     *
+                     * 方案 D 的软换行规则曾把「连续列表项」也并进同一段落（`- a\n- b`
+                     * 重载后只剩行 0 有 bullet）——本处恢复列表项分段，但**任务列表行
+                     * 例外**：连续同级任务行合并为单段落（行级勾选态的承载结构，
+                     * 见 [TaskList] 与 LI open 的续行分支）。
+                     *
+                     * 判定（对 EOL 之后的下一行做**行首**匹配，取行内文本锚定 `^`）：
+                     * - 普通列表项行（`- `/`1. ` 开头）⇒ 分段（恢复逐项段落）；
+                     * - 任务行（`- [ ] `/`- [x] `）且当前段落是**同层级 TaskList** ⇒ 续行
+                     *   （`\n` 写进段内，勾选态由 LI open 的续行分支按行回填）；
+                     * - 其余 ⇒ 维持方案 D 的软换行语义。
+                     */
+                    val nextLineListInfo: Pair<Boolean, Int>? = run {
+                        var i = node.endOffset
+                        var spaces = 0
+                        while (
+                            i < correctedMarkdown.length &&
+                            (correctedMarkdown[i] == ' ' || correctedMarkdown[i] == '\t')
+                        ) {
+                            i++
+                            spaces++
+                        }
+                        if (i >= correctedMarkdown.length || correctedMarkdown[i] == '\n') {
+                            null
+                        } else {
+                            val lineEnd = correctedMarkdown.indexOf('\n', i)
+                                .let { if (it < 0) correctedMarkdown.length else it }
+                            val nextLineText = correctedMarkdown.substring(i, lineEnd)
+                            val isTaskLine = TaskListItemSourceRegex.containsMatchIn(nextLineText)
+                            val isListItem = isTaskLine ||
+                                ListItemMarkerSourceRegex.containsMatchIn(nextLineText)
+                            if (isListItem) Pair(isTaskLine, spaces / 2 + 1) else null
+                        }
+                    }
+                    val lastParagraphType = lastParagraph?.type
+                    val mergeTaskLine =
+                        nextLineListInfo != null &&
+                            nextLineListInfo.first &&
+                            lastParagraphType is TaskList &&
+                            nextLineListInfo.second == lastParagraphType.level
+
+                    val hasContentToBreak =
+                        lastParagraph?.isNotEmpty() == true ||
+                            beforeLastParagraph?.isNotEmpty() == true ||
+                            lastBrParagraphIndex == richParagraphList.lastIndex ||
+                            beforeLastBrParagraphIndex == richParagraphList.lastIndex - 1
+
+                    if (isParagraphBreak && hasContentToBreak) {
                         richParagraphList.add(RichParagraph())
                     } else if (!isParagraphBreak) {
-                        /**
-                         * 软换行：`\n` 作为**段内文本**写入当前段落（不分段）。
-                         *
-                         * ⚠️ 2026-09-15 定稿结论：曾实验「软换行也分段」（方案 D'，段间
-                         * 占位空格 / ZWSP / 真实 `\n` / 不写 四种占位都试过）——分段虽给
-                         * 段落级操作（复选框/列表）行粒度，但手柄拖拽的行尾归属无解
-                         * （占位空格/ZWSP 跳行、`\n` 空行、无字符重合），且段间 `\n` 会与
-                         * 段落边界叠加产生空行。**定稿：普通段落块保持单段落 + 段内 `\n`**，
-                         * 段落级操作（复选框等）按整块语义执行。
-                         */
-                        onText("\n")
+                        if (nextLineListInfo != null && !mergeTaskLine && hasContentToBreak) {
+                            /** 普通列表项行：分段（不写 `\n`），恢复逐项段落 */
+                            richParagraphList.add(RichParagraph())
+                        } else {
+                            /**
+                             * 软换行：`\n` 作为**段内文本**写入当前段落（不分段）——
+                             * 含任务行续行（行级合并的行分隔符）。
+                             *
+                             * ⚠️ 2026-09-15 定稿结论：曾实验「软换行也分段」（方案 D'，段间
+                             * 占位空格 / ZWSP / 真实 `\n` / 不写 四种占位都试过）——分段虽给
+                             * 段落级操作（复选框/列表）行粒度，但手柄拖拽的行尾归属无解
+                             * （占位空格/ZWSP 跳行、`\n` 空行、无字符重合），且段间 `\n` 会与
+                             * 段落边界叠加产生空行。**定稿：普通段落块保持单段落 + 段内 `\n`**，
+                             * 行粒度由 TaskList 行级渲染承载（v2026-09-16）。
+                             */
+                            onText("\n")
+                        }
                     }
 
                     currentRichSpan = null
@@ -619,8 +700,26 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
             // imply bold/font-size/etc., so suppress redundant ** formatting on heading-implied
             // attributes.
             val isHeading = richParagraph.headingStyle != HeadingStyle.Normal
+
+            /**
+             * v2026-09-16 行级渲染：TaskList 多行段落按行输出前缀——行 0 的前缀由
+             * [appendParagraphStartText] 输出，children 文本里的每个 `\n`（段内软换行）
+             * 之后插入该行各自的前缀（`- [ ] 行1\n- [x] 行2`），使解码端能把连续任务行
+             * 合并回单段落并逐行还原勾选态（见 encode 的续行分支）。
+             *
+             * ⚠️ 已知限制：跨行样式（如 `**` 包住两行）会被插入的前缀截断——任务列表
+             * 段落内的软换行行各自独立渲染勾选框，跨行样式在行级语义下本就不成立，
+             * 往返后样式按行拆分（内容不丢）。
+             */
+            val childrenChunkStart = builder.length
             richParagraph.children.fastForEach { richSpan ->
                 builder.append(decodeRichSpanToMarkdown(richSpan, isHeading = isHeading))
+            }
+            if (richParagraph.type is TaskList) {
+                builder.applyTaskListLinePrefixes(
+                    chunkStart = childrenChunkStart,
+                    type = richParagraph.type as TaskList,
+                )
             }
 
             // Append line break if needed
@@ -846,6 +945,30 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
     }
 
     /**
+     * 把 children 输出 chunk（[chunkStart] 起）里的段内 `\n` 后面插入**各行前缀**
+     * （v2026-09-16 行级渲染）。行 k ≥ 1 的前缀 = 层级缩进 + `- [x] ` / `- [ ] `
+     * （行 0 前缀已由 [appendParagraphStartText] 输出，chunk 内不再重复）。
+     *
+     * 例：段落 "行1\n行2"（行 1 已勾选）→ chunk "行1\n行2" →
+     * `- [ ] 行1\n- [x] 行2`（chunk 前已输出 `- [ ] `）。
+     * 尾随 `\n`（段末空行）同样获得前缀 → 空任务项（与编辑态"末尾回车 = 空行"一致）。
+     */
+    private fun StringBuilder.applyTaskListLinePrefixes(chunkStart: Int, type: TaskList) {
+        val chunk = substring(chunkStart, length)
+        if (!chunk.contains('\n')) return
+
+        val lines = chunk.split('\n')
+        delete(chunkStart, length)
+        append(lines[0])
+        for (line in 1 until lines.size) {
+            append('\n')
+            append("  ".repeat(type.level - 1))
+            append(if (type.isCheckedLine(line)) "- [x] " else "- [ ] ")
+            append(lines[line])
+        }
+    }
+
+    /**
      * 从 LIST_ITEM 源码判定 GFM 任务列表勾选态（v2026-09-15）。
      *
      * intellij-markdown 的 GFM flavour **不产出 task-list 节点**，`- [ ] a` 只会被
@@ -892,6 +1015,48 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
     }
 
     /**
+     * 数段落的已累计 `\n` 数（v2026-09-16 行级渲染，续行行号判定用）：
+     * 深度优先遍历 children 文本（marker 是 NBSP 无 `\n`，不计）。
+     * 段文本 = 各 span 文本的深度优先拼接（与 [com.mohamedrejeb.richeditor.model.RichTextState]
+     * `computeTextFromTree` 的拼接口径一致）。
+     */
+    private fun countParagraphNewlines(paragraph: RichParagraph): Int {
+        var count = 0
+
+        fun walk(span: RichSpan) {
+            count += span.text.count { it == '\n' }
+            span.children.fastForEach { walk(it) }
+        }
+
+        paragraph.children.fastForEach { walk(it) }
+        return count
+    }
+
+    /**
+     * 剥除任务列表**续行**的 `[ ] `/`[x] ` 前缀（v2026-09-16 行级渲染）。
+     *
+     * 与 [stripTaskListPrefix]（行 0，首个文本 span）的差异：续行合并进单段落后，
+     * 该行前缀落在**该行首 span**——EOL 软换行把 `currentRichSpan` 置 null 后，
+     * PARAGRAPH open 创建的新 span 承接本行全部前缀 tokens，即段落 children 的
+     * **最后一个** span（行内后续样式 span 挂到它下面，不会排到它后面）。
+     * 剥空则从树上移除（空任务行保持结构干净）。
+     */
+    private fun stripTaskListLinePrefix(paragraph: RichParagraph) {
+        val lineSpan = paragraph.children.lastOrNull() ?: return
+        val match = TaskListContentPrefixRegex.find(lineSpan.text) ?: return
+
+        lineSpan.text = lineSpan.text.substring(match.range.last + 1)
+
+        if (lineSpan.text.isEmpty()) {
+            val parent = lineSpan.parent
+            if (parent != null)
+                parent.children.remove(lineSpan)
+            else
+                paragraph.children.remove(lineSpan)
+        }
+    }
+
+    /**
      * 任务列表项**源码**前缀：行首（可选列表 marker）后的 `[ ] ` / `[x] ` / `[X] `，
      * 捕获组 1 为勾选字符。
      */
@@ -902,6 +1067,14 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
      * 文本，但这里仍多兼容一层 marker 形式，避免异常数据下残留字面量。
      */
     private val TaskListContentPrefixRegex = Regex("""^[ \t]*(?:[-*+][ \t]+)?\[[ xX]\][ \t]?""")
+
+    /**
+     * 行首**普通列表项** marker（v2026-09-16 行级渲染，EOL 分段判定用）：
+     * 无序 `[-*+]` 或有序 `\d{1,9}[.)]`，后接空白。任务行由
+     * [TaskListItemSourceRegex] 先行判定（它包含 marker + `[ ]` 前缀的完整形态），
+     * 命中任务行时本 regex 不参与（任务行按行级合并/新建任务段落处理）。
+     */
+    private val ListItemMarkerSourceRegex = Regex("""^[ \t]*(?:[-*+][ \t]|\d{1,9}[.)][ \t])""")
 
     /**
      * Encodes Markdown elements to [SpanStyle].
