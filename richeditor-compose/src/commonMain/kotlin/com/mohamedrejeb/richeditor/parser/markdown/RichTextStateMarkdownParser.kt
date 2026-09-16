@@ -1025,11 +1025,13 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         firstTextSpan.text = firstTextSpan.text.substring(match.range.last + 1)
 
         if (firstTextSpan.text.isEmpty()) {
-            val parent = firstTextSpan.parent
-            if (parent != null)
-                parent.children.remove(firstTextSpan)
-            else
-                paragraph.children.remove(firstTextSpan)
+            /**
+             * 空任务项（v2026-09-16）：children 保留一个 NBSP 占位——children 全空 +
+             * 零宽 marker 时行宽为 0，光标定位退化为行盒左缘（跑到勾选框左侧，
+             * 真机实测）；NBSP 有宽度且不可见，把光标撑到框右侧、与上下文对齐
+             * （NBSP 非空白字符，`trim()` 不会剥掉；App 字数统计/序列化已剥）。
+             */
+            firstTextSpan.text = "\u00A0"
         }
     }
 
@@ -1067,11 +1069,8 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         lineSpan.text = lineSpan.text.substring(match.range.last + 1)
 
         if (lineSpan.text.isEmpty()) {
-            val parent = lineSpan.parent
-            if (parent != null)
-                parent.children.remove(lineSpan)
-            else
-                paragraph.children.remove(lineSpan)
+            /** 空任务行：同 [stripTaskListPrefix]，children 补 NBSP 撑光标位置 */
+            lineSpan.text = "\u00A0"
         }
     }
 
