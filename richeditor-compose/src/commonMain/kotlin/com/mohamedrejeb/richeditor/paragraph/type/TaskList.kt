@@ -99,17 +99,20 @@ internal class TaskList private constructor(
      * （如 [com.mohamedrejeb.richeditor.model.RichTextState] 的行级 toggle）创建
      * 带 [TaskList.taskLines] 的实例——主构造是 private（派生统一走
      * [withChecked] / [withCheckedLines] / [withTaskLines]，保证外观参数透传），
-     * 跨类只能走次构造。参数名与主构造一致，调用点三者齐用时匹配本构造。
+     * 跨类只能走次构造。
+     *
+     * ⚠️ 委托目标必须是 `(initialLevel, checked)` 旧次构造（具名 `checked` 唯一
+     * 锁定）：若按参数名直接委托主构造，本构造自身（默认参数使其同签名 applicable）
+     * 会被重载解析选中 → "cycle in the delegation calls chain"。taskLines 在构造体
+     * 内经 setter 写入（重建 startRichSpan，构造期无害，与 checked 同款模式）。
      */
     constructor(
         initialLevel: Int = 1,
         initialChecked: Boolean = false,
         initialTaskLines: Set<Int>? = null,
-    ) : this(
-        initialLevel = initialLevel,
-        initialChecked = initialChecked,
-        initialTaskLines = initialTaskLines,
-    )
+    ) : this(initialLevel = initialLevel, checked = initialChecked) {
+        this.taskLines = initialTaskLines
+    }
 
     override var startTextWidth: TextUnit = startTextWidth
         set(value) {
