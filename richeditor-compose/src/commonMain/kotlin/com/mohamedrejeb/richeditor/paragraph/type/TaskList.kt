@@ -36,12 +36,20 @@ import com.mohamedrejeb.richeditor.paragraph.RichParagraph
  *   的排版位置画出来，编辑态与只读态共用同一套绘制代码；
  * - `ParagraphStyle`：`TextIndent(firstLine = restLine = base + 预留宽)`，把正文整体
  *   推到「勾选框 + 间距」右侧，左侧预留区交给勾选框绘制；
- * - [checked]：段落级勾选态。
+ * - [checked]：行 0（首行）勾选态；[checkedLines]：行号 ≥ 1 的行级勾选态。
+ *
+ * **行级渲染（v2026-09-16）**：段落保持**单段落 + 段内 `\n`**（方案 D 定稿——
+ * 实验矩阵证明"多段落行粒度"与"手柄行尾归属"在库架构下互斥），`RichSpanStyle.CheckBox`
+ * 按段落文本的 `\n` 分行、每行行首绘制勾选框，勾选形态由
+ * [checked]（行 0）/ [checkedLines]（行 ≥ 1）决定；命中翻转走
+ * [com.mohamedrejeb.richeditor.model.RichTextState.toggleTaskListCheckedAtTextOffset]
+ * 的行级判定。行结构变化（增删 `\n`）由 [reconcileCheckedLines] 对账重置。
  *
  * **markdown 往返**：编码端
  * [com.mohamedrejeb.richeditor.parser.markdown.RichTextStateMarkdownParser] 的
- * `appendParagraphStartText` 输出 `- [ ] ` / `- [x] `（含层级缩进前缀）；解码端识别
- * 同款前缀还原本类型。该格式与 App 侧原有输出完全一致，故存量数据天然兼容。
+ * `appendParagraphStartText` 输出行 0 前缀 `- [ ] ` / `- [x] `（含层级缩进前缀），
+ * 多行段落的行 ≥ 1 由编码端在段内每个 `\n` 后插入各自前缀（`- [ ] 行1\n- [x] 行2`）；
+ * 解码端把连续任务行合并回单段落并逐行还原勾选态。存量单行数据格式不变，天然兼容。
  *
  * **层级**：实现 [ConfigurableListLevel]，层级缩进沿用无序列表的 `indent` 配置
  * （[RichTextConfig.unorderedListIndent]），与列表行为对称。
@@ -52,6 +60,8 @@ internal class TaskList private constructor(
     startTextWidth: TextUnit = 0.sp,
     initialLevel: Int = 1,
     initialChecked: Boolean = false,
+    initialCheckedLines: Map<Int, Boolean> = emptyMap(),
+    initialLastKnownLineCount: Int = -1,
     private val checkBoxSize: TextUnit = DefaultTaskListCheckBoxSize,
     private val checkBoxGap: TextUnit = DefaultTaskListCheckBoxGap,
     private val checkBoxCornerRadius: TextUnit = DefaultTaskListCheckBoxCornerRadius,
@@ -102,7 +112,7 @@ internal class TaskList private constructor(
         }
 
     /**
-     * 段落级勾选态（v2026-09-15）。
+     * 段落级勾选态（v2026-09-15）——**行 0（首行）**的勾选状态。
      *
      * 变更时必须重建 `startRichSpan`——勾选外观由
      * [RichSpanStyle.CheckBox] 对象承载，而该对象的相等性包含 [checked]
@@ -113,6 +123,69 @@ internal class TaskList private constructor(
             field = value
             startRichSpan = getNewStartRichSpan()
         }
+
+    /**
+     * **行级勾选态**（v2026-09-16 TaskList 行级渲染改造）：行号 → 勾选状态，
+     * **只承载行号 ≥ 1 的行**（行 0 一律由 [checked] 承载，避免双源不同步）；
+     * map 中不存在的行 = 未勾选。
+     *
+     * 段落保持**单段落 + 段内 `\n`**（方案 D 定稿），每个逻辑行由渲染层按
+     * `\n` 分行绘制勾选框（[RichSpanStyle.CheckBox]），本 map 提供各行状态。
+     *
+     * ⚠️ **行号会随编辑失效**：增删 `\n` 会使行号平移，运行时由
+     * [reconcileCheckedLines] 在 `updateAnnotatedString` 里检测行数变化并**重置**
+     * （行 0 的 [checked] 保留）。重置比平移保守——宁可丢状态也不显示错位状态。
+     *
+     * 变更时同样重建 `startRichSpan`（CheckBox 的相等性包含本 map）。
+     */
+    var checkedLines: Map<Int, Boolean> = initialCheckedLines
+        set(value) {
+            field = value
+            startRichSpan = getNewStartRichSpan()
+        }
+
+    /**
+     * 上次已知的行数（`'\n'` 数 + 1），-1 = 尚未初始化（首次
+     * [reconcileCheckedLines] 直接采纳，用于解析构建期不误清）。
+     * 纯簿记字段：不参与 equals/hashCode。
+     */
+    internal var lastKnownLineCount: Int = initialLastKnownLineCount
+
+    /** 指定行的勾选状态（行 0 由 [checked] 承载；越界/缺省 = 未勾选）。 */
+    fun isCheckedLine(line: Int): Boolean =
+        if (line <= 0) checked else checkedLines[line] == true
+
+    /**
+     * 解析构建期写入行级状态（v2026-09-16 markdown 解码：连续任务行合并为
+     * 单段落后逐行回填）。运行时翻转走 [withCheckedLines]（新实例、可撤销），
+     * **不得**用本方法（就地变更会污染历史快照的共享引用语义之外的路径）。
+     */
+    internal fun setLineChecked(line: Int, checked: Boolean) {
+        if (line <= 0) {
+            this.checked = checked
+        } else {
+            checkedLines = checkedLines + (line to checked)
+        }
+        lastKnownLineCount = maxOf(lastKnownLineCount, line + 1)
+    }
+
+    /**
+     * 渲染期行结构对账（v2026-09-16）：行数变化 ⇒ 行号全部平移 ⇒ 行级状态失义。
+     *
+     * - 首次（-1）＝解析构建后的第一帧：直接采纳当前行数，不清状态；
+     * - 行数不变：无操作（勾选翻转不改变行数，状态保留 ✅）；
+     * - 行数变化：清空 [checkedLines]（行 0 的 [checked] 不受影响——
+     *   它不依赖行号）。保守口径：丢状态好过错位状态。
+     */
+    internal fun reconcileCheckedLines(lineCount: Int) {
+        if (lastKnownLineCount == lineCount) return
+        if (lastKnownLineCount == -1) {
+            lastKnownLineCount = lineCount
+            return
+        }
+        lastKnownLineCount = lineCount
+        if (checkedLines.isNotEmpty()) checkedLines = emptyMap()
+    }
 
     private var style: ParagraphStyle =
         getNewParagraphStyle()
@@ -171,6 +244,7 @@ internal class TaskList private constructor(
         )
         richSpan.richSpanStyle = RichSpanStyle.CheckBox(
             checked = checked,
+            checkedLines = checkedLines,
             boxSize = checkBoxSize,
             gap = checkBoxGap,
             cornerRadius = checkBoxCornerRadius,
@@ -185,7 +259,7 @@ internal class TaskList private constructor(
 
     /**
      * 回车续行的下一段落类型：**同层级、同外观、未勾选**（与 App 侧
-     * 「回车新行 = 未勾选复选框项」的既有行为一致）。
+     * 「回车新行 = 未勾选复选框项」的既有行为一致）。行级状态不带（新项空白起步）。
      */
     override fun getNextParagraphType(): ParagraphType =
         TaskList(
@@ -193,6 +267,7 @@ internal class TaskList private constructor(
             startTextWidth = startTextWidth,
             initialLevel = level,
             initialChecked = false,
+            initialCheckedLines = emptyMap(),
             checkBoxSize = checkBoxSize,
             checkBoxGap = checkBoxGap,
             checkBoxCornerRadius = checkBoxCornerRadius,
@@ -203,12 +278,14 @@ internal class TaskList private constructor(
             checkmarkColor = checkmarkColor,
         )
 
-    override fun copy(): ParagraphType =
+    override fun copy(): TaskList =
         TaskList(
             initialIndent = indent,
             startTextWidth = startTextWidth,
             initialLevel = level,
             initialChecked = checked,
+            initialCheckedLines = checkedLines,
+            lastKnownLineCount = lastKnownLineCount,
             checkBoxSize = checkBoxSize,
             checkBoxGap = checkBoxGap,
             checkBoxCornerRadius = checkBoxCornerRadius,
@@ -232,6 +309,33 @@ internal class TaskList private constructor(
             startTextWidth = startTextWidth,
             initialLevel = level,
             initialChecked = checked,
+            initialCheckedLines = checkedLines,
+            lastKnownLineCount = lastKnownLineCount,
+            checkBoxSize = checkBoxSize,
+            checkBoxGap = checkBoxGap,
+            checkBoxCornerRadius = checkBoxCornerRadius,
+            checkBoxStrokeWidth = checkBoxStrokeWidth,
+            checkmarkStrokeWidth = checkmarkStrokeWidth,
+            checkedColor = checkedColor,
+            uncheckedColor = uncheckedColor,
+            checkmarkColor = checkmarkColor,
+        )
+
+    /**
+     * 以新的**行级勾选态**派生同配置新类型（v2026-09-16 行级翻转入口）。
+     *
+     * 与 [withChecked] 同款设计：运行时翻转必须换新实例（历史快照走
+     * [copy] 的深拷贝，就地变更会让 undo 恢复出错位状态）。行 0 的翻转
+     * 继续走 [withChecked]。
+     */
+    internal fun withCheckedLines(checkedLines: Map<Int, Boolean>): TaskList =
+        TaskList(
+            initialIndent = indent,
+            startTextWidth = startTextWidth,
+            initialLevel = level,
+            initialChecked = checked,
+            initialCheckedLines = checkedLines,
+            lastKnownLineCount = lastKnownLineCount,
             checkBoxSize = checkBoxSize,
             checkBoxGap = checkBoxGap,
             checkBoxCornerRadius = checkBoxCornerRadius,
@@ -250,6 +354,7 @@ internal class TaskList private constructor(
         if (startTextWidth != other.startTextWidth) return false
         if (level != other.level) return false
         if (checked != other.checked) return false
+        if (checkedLines != other.checkedLines) return false
         if (checkBoxSize != other.checkBoxSize) return false
         if (checkBoxGap != other.checkBoxGap) return false
         if (checkBoxCornerRadius != other.checkBoxCornerRadius) return false
@@ -267,6 +372,7 @@ internal class TaskList private constructor(
         result = 31 * result + startTextWidth.hashCode()
         result = 31 * result + level
         result = 31 * result + checked.hashCode()
+        result = 31 * result + checkedLines.hashCode()
         result = 31 * result + checkBoxSize.hashCode()
         result = 31 * result + checkBoxGap.hashCode()
         result = 31 * result + checkBoxCornerRadius.hashCode()

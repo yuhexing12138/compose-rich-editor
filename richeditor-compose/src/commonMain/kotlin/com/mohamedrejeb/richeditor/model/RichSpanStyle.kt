@@ -506,8 +506,8 @@ public interface RichSpanStyle {
      * - 已勾选 = 实心填充 + 白色圆头对勾；
      * - 方框边长/圆角/描边/配色全部可由调用方注入（App 传主题色）。
      *
-     * ⚠️ [equals]/[hashCode] 必须包含 [checked]：库以样式对象相等性判断是否
-     * 需要刷新，漏掉勾选态会导致点击后画面不更新。
+     * ⚠️ [equals]/[hashCode] 必须包含 [checked] 与 [checkedLines]：库以样式对象
+     * 相等性判断是否需要刷新，漏掉勾选态会导致点击后画面不更新。
      *
      * **几何约定**：尺寸用 [TextUnit]（sp），与
      * [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的 `TextIndent` 预留
@@ -518,7 +518,10 @@ public interface RichSpanStyle {
      * 成员，而 `DrawScope.drawCustomStyle` 函数体里**扩展接收者优先于派发接收者**，
      * 写 `size` 会被解析成 `DrawScope.size`（编译报 `Size.toPx()` 不存在）。
      *
-     * @param checked 勾选态。
+     * @param checked 行 0（首行）勾选态。
+     * @param checkedLines 行号 ≥ 1 的行级勾选态（行号 → 是否勾选；缺省 = 未勾选）。
+     *   行 0 不进本 map（由 [checked] 承载），与 [com.mohamedrejeb.richeditor.paragraph.type.TaskList]
+     *   的字段语义严格一致。
      * @param boxSize 方框边长（sp）。
      * @param gap 勾选框与正文之间的间距（sp）。
      * @param cornerRadius 方框圆角。
@@ -530,6 +533,7 @@ public interface RichSpanStyle {
      */
     public class CheckBox(
         public val checked: Boolean,
+        public val checkedLines: Map<Int, Boolean> = emptyMap(),
         private val boxSize: TextUnit = DefaultTaskListCheckBoxSize,
         private val gap: TextUnit = DefaultTaskListCheckBoxGap,
         private val cornerRadius: TextUnit = DefaultTaskListCheckBoxCornerRadius,
@@ -627,6 +631,7 @@ public interface RichSpanStyle {
             if (other !is CheckBox) return false
 
             return checked == other.checked &&
+                checkedLines == other.checkedLines &&
                 boxSize == other.boxSize &&
                 gap == other.gap &&
                 cornerRadius == other.cornerRadius &&
@@ -639,6 +644,7 @@ public interface RichSpanStyle {
 
         override fun hashCode(): Int {
             var result = checked.hashCode()
+            result = 31 * result + checkedLines.hashCode()
             result = 31 * result + boxSize.hashCode()
             result = 31 * result + gap.hashCode()
             result = 31 * result + cornerRadius.hashCode()
