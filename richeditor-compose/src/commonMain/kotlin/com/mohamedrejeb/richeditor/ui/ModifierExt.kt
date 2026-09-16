@@ -6,6 +6,7 @@ import androidx.compose.ui.text.TextRange
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
 import com.mohamedrejeb.richeditor.model.RichSpanStyle
 import com.mohamedrejeb.richeditor.model.RichTextState
+import com.mohamedrejeb.richeditor.paragraph.RichParagraph
 import androidx.compose.ui.util.fastForEach
 
 @OptIn(ExperimentalRichTextApi::class)
@@ -44,13 +45,23 @@ internal fun Modifier.drawRichSpanStyle(
              * （当前用于 TaskList 段落的勾选框 [RichSpanStyle.CheckBox]）需要在这里
              * 单独补一遍，否则不会被 `drawCustomStyle` 调用到。
              *
+             * v2026-09-16 行级渲染：**行感知的 marker 样式**（[RichSpanStyle.CheckBox]）
+             * 需要按段内 `\n` 分行逐行绘制，故传**段落全 range**（[RichParagraph.getTextRange]，
+             * 段首 marker → 段末 child）；其余 marker 样式维持 marker 自身 range。
+             * 将来新增行感知样式时在 `is RichSpanStyle.CheckBox` 处扩展。
+             *
              * 追加在 children 之后：marker 属于段首标识，视觉上应画在最上层。
              */
             richTextState.richParagraphList.fastForEach { paragraph ->
                 val startRichSpan = paragraph.type.startRichSpan
                 val markerStyle = startRichSpan.richSpanStyle
                 if (markerStyle !is RichSpanStyle.Default) {
-                    styledRichSpanList.add(markerStyle to startRichSpan.textRange)
+                    val range =
+                        if (markerStyle is RichSpanStyle.CheckBox)
+                            paragraph.getTextRange()
+                        else
+                            startRichSpan.textRange
+                    styledRichSpanList.add(markerStyle to range)
                 }
             }
 

@@ -554,6 +554,31 @@ public interface RichSpanStyle {
         /** 原子单元：编辑操作不切入 marker 内部 */
         override val isAtomic: Boolean = true
 
+        /**
+         * 指定逻辑行的勾选形态（v2026-09-16 行级渲染）：行 0 = [checked]，
+         * 行 ≥ 1 = [checkedLines] 查表（缺省 = 未勾选）。与
+         * [com.mohamedrejeb.richeditor.paragraph.type.TaskList.isCheckedLine] 语义一致。
+         */
+        private fun isCheckedLine(line: Int): Boolean =
+            if (line <= 0) checked else checkedLines[line] == true
+
+        /**
+         * **按行绘制勾选框**（v2026-09-16 行级渲染改造；原实现只画行 0 一个）。
+         *
+         * `textRange` 由 `Modifier.drawRichSpanStyle` 传**段落全 range**（段首 marker →
+         * 段末 child）——行 0 起点 = marker 位置，此后每个段内 `\n` 的下一位 =
+         * 新行起点。段落保持**单段落 + 段内 `\n`**（方案 D 定稿），逻辑行与 `\n`
+         * 一一对应；折行（同一逻辑行的视觉多行）不产生新勾选框。
+         *
+         * **定位**：`getBoundingBoxes(start, start + 1)` 对单字符 range 返回**行级盒**
+         * （top/bottom = 整行行高，left = 首字符 x，见其实现）——垂直居中与原单行版
+         * 完全同式。每行勾选框 x 一致：TaskList 的 `TextIndent` firstLine 与 restLine
+         * 相同，各行文本起点同一，故以行 0（marker）左缘为基准减预留宽。
+         *
+         * **已知取舍**：段末的"末尾空行"（段内最后字符是 `\n`）行起点 = 段末，
+         * `getBoundingBoxes` 对超出"最后非空 offset"的 range 返回空 → 不画（该行
+         * 输入首字符后勾选框即出现）；textRange 折叠（无 marker 字符）直接跳过。
+         */
         override fun DrawScope.drawCustomStyle(
             layoutResult: TextLayoutResult,
             textRange: TextRange,
@@ -564,65 +589,94 @@ public interface RichSpanStyle {
             /** 折叠 range（无占位字符）无法定位，直接跳过 */
             if (textRange.collapsed) return
 
-            val box = layoutResult.getBoundingBoxes(
+            val text = layoutResult.layoutInput.text
+
+            /** 逻辑行起点集合：行 0 = 段首（marker），每个段内 `\n` 的下一位 = 新行 */
+            val lineStarts = mutableListOf(textRange.start)
+            val scanEnd = textRange.end.coerceAtMost(text.length)
+            var i = textRange.start
+            while (i < scanEnd) {
+                if (text[i] == '\n') lineStarts.add(i + 1)
+                i++
+            }
+
+            /** 行 0 的盒：marker 所在行——x 基准（所有行的文本起点因 TextIndent 相同而对齐） */
+            val markerBox = layoutResult.getBoundingBoxes(
                 startOffset = textRange.start,
-                endOffset = textRange.end,
+                endOffset = textRange.start + 1,
                 flattenForFullParagraphs = false,
             ).firstOrNull() ?: return
 
             val side = boxSize.toPx()
             /**
              * marker 已被 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的
-             * TextIndent 推到「[boxSize] + [gap]」之后，故勾选框画在 marker 左侧这段
-             * 预留区里：左缘 = marker 左缘 - 预留宽度。
+             * TextIndent 推到「[boxSize] + [gap]」之后，故勾选框画在每行文本左缘
+             * 左侧这段预留区里：左缘 = marker 左缘 - 预留宽度。
              */
             val reserved = side + gap.toPx()
-            val left = box.left - reserved + startPadding
-            /** 与 marker 所在行垂直居中（box 即该行的行盒） */
-            val top = box.top + topPadding + (box.height - side) / 2f
+            val left = markerBox.left - reserved + startPadding
             val radius = CornerRadius(cornerRadius.toPx())
 
-            /** 圆角方框路径（勾选/未勾选共用同一条路径，仅填充与描边不同） */
-            val framePath = Path().apply {
-                addRoundRect(
-                    RoundRect(
-                        left = left,
-                        top = top,
-                        right = left + side,
-                        bottom = top + side,
-                        topLeftCornerRadius = radius,
-                        topRightCornerRadius = radius,
-                        bottomRightCornerRadius = radius,
-                        bottomLeftCornerRadius = radius,
+            lineStarts.forEachIndexed { line, lineStart ->
+                /** 该行勾选形态：行 0 走 [checked]，行 ≥ 1 查 [checkedLines] */
+                val lineChecked = isCheckedLine(line)
+
+                /**
+                 * 行盒：该行首字符的单字符 boundingBox（行级 top/bottom）。
+                 * 段末空行（起点落在"最后非空 offset"之后或 == text.length）返回空，
+                 * 跳过该行。
+                 */
+                val lineBox = layoutResult.getBoundingBoxes(
+                    startOffset = lineStart,
+                    endOffset = lineStart + 1,
+                    flattenForFullParagraphs = false,
+                ).firstOrNull() ?: return@forEachIndexed
+
+                /** 与该行垂直居中（lineBox 即该行的行级盒） */
+                val top = lineBox.top + topPadding + (lineBox.height - side) / 2f
+
+                /** 圆角方框路径（勾选/未勾选共用同一条路径，仅填充与描边不同） */
+                val framePath = Path().apply {
+                    addRoundRect(
+                        RoundRect(
+                            left = left,
+                            top = top,
+                            right = left + side,
+                            bottom = top + side,
+                            topLeftCornerRadius = radius,
+                            topRightCornerRadius = radius,
+                            bottomRightCornerRadius = radius,
+                            bottomLeftCornerRadius = radius,
+                        )
                     )
-                )
-            }
-
-            if (checked) {
-                /** 勾选态：实心填充 + 白色圆头对勾 */
-                drawPath(path = framePath, color = checkedColor, style = Fill)
-
-                val checkPath = Path().apply {
-                    moveTo(left + side * 0.26f, top + side * 0.52f)
-                    lineTo(left + side * 0.44f, top + side * 0.70f)
-                    lineTo(left + side * 0.74f, top + side * 0.32f)
                 }
-                drawPath(
-                    path = checkPath,
-                    color = checkmarkColor,
-                    style = Stroke(
-                        width = checkmarkStrokeWidth.toPx(),
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    ),
-                )
-            } else {
-                /** 未勾选态：只描边 */
-                drawPath(
-                    path = framePath,
-                    color = uncheckedColor,
-                    style = Stroke(width = strokeWidth.toPx()),
-                )
+
+                if (lineChecked) {
+                    /** 勾选态：实心填充 + 白色圆头对勾 */
+                    drawPath(path = framePath, color = checkedColor, style = Fill)
+
+                    val checkPath = Path().apply {
+                        moveTo(left + side * 0.26f, top + side * 0.52f)
+                        lineTo(left + side * 0.44f, top + side * 0.70f)
+                        lineTo(left + side * 0.74f, top + side * 0.32f)
+                    }
+                    drawPath(
+                        path = checkPath,
+                        color = checkmarkColor,
+                        style = Stroke(
+                            width = checkmarkStrokeWidth.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                } else {
+                    /** 未勾选态：只描边 */
+                    drawPath(
+                        path = framePath,
+                        color = uncheckedColor,
+                        style = Stroke(width = strokeWidth.toPx()),
+                    )
+                }
             }
         }
 
