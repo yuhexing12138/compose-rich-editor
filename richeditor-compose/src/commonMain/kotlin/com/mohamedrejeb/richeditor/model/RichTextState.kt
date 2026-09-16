@@ -2083,10 +2083,10 @@ public class RichTextState internal constructor(
     }
 
     /**
-     * 对**指定**任务列表段落就地换勾选态（选区版 [applySetTaskListChecked] 与点击命中版
-     * [toggleTaskListCheckedAtTextOffset] 共用）。
+     * 对**指定**任务列表段落就地换勾选态（行 0 / 单行语义；v2026-09-15）。
      *
      * 走 [updateParagraphType]：同步 marker 文本、缩进样式与光标，不经 markdown 往返。
+     * 行 ≥ 1 的行级翻转走 [applyTaskListLineCheckedOnParagraph]。
      */
     private fun applyTaskListCheckedOnParagraph(paragraph: RichParagraph, checked: Boolean) {
         val type = paragraph.type as? TaskList ?: return
@@ -2101,33 +2101,84 @@ public class RichTextState internal constructor(
     }
 
     /**
-     * 在指定文本偏移处切换任务列表项的勾选态（**勾选框点击入口**，v2026-09-15）。
+     * 对指定任务列表段落的**指定行**就地换勾选态（v2026-09-16 行级翻转）。
      *
-     * 命中判定：偏移所属段落是 `TaskList`，且偏移 ≤ 该段落 marker 的结束位置。
-     * 勾选框画在 marker 左侧的 TextIndent 预留区里，`getOffsetForPosition` 对那段空白
-     * 会 clamp 到段落起点，因此"点勾选框"与"点 marker 本身"都能命中；点在正文上
-     * （偏移 > marker 结束）不命中，交回调用方做普通光标定位（放行手势）。
+     * 行 0 复用 [applyTaskListCheckedOnParagraph]（[TaskList.checked] 字段语义）；
+     * 行 ≥ 1 走 [TaskList.withCheckedLines] **换新实例**——历史快照按段落深拷贝，
+     * 就地变更行级状态会让 undo 恢复出错位状态，必须与 `withChecked` 同款换实例。
+     */
+    private fun applyTaskListLineCheckedOnParagraph(
+        paragraph: RichParagraph,
+        line: Int,
+        checked: Boolean,
+    ) {
+        val type = paragraph.type as? TaskList ?: return
+
+        if (line <= 0) {
+            applyTaskListCheckedOnParagraph(paragraph = paragraph, checked = checked)
+            return
+        }
+
+        val newTextFieldValue = updateParagraphType(
+            paragraph = paragraph,
+            newType = type.withCheckedLines(
+                checkedLines = type.checkedLines + (line to checked)
+            ),
+            textFieldValue = textFieldValue,
+        )
+        updateTextFieldValue(newTextFieldValue)
+    }
+
+    /**
+     * 在指定文本偏移处切换任务列表项的勾选态（**勾选框点击入口**，v2026-09-15；
+     * v2026-09-16 升级为**行级**判定与翻转）。
+     *
+     * 行级渲染下每个逻辑行（段内 `\n` 分行）的行首左侧都有勾选框。点击某行勾选框时
+     * `getOffsetForPosition` 对该空白区 clamp 到**该行首字符的偏移**，因此命中判定 =
+     * **offset 是段落内某个逻辑行的行首**：
+     * - offset == 段首（marker 位置）⇒ 行 0（与旧版"点 marker"兼容）；
+     * - offset > 段首且前一个字符是 `\n` ⇒ 行 k（k = 段首到 offset 间的 `\n` 数）。
+     * 点在正文上（非行首）不命中，交回调用方做普通光标定位（放行手势）。
      *
      * 命中即写入块内 history（可撤销），与"点击勾选属用户操作"的语义一致。
      *
      * @param offset 文本偏移（编辑态由 `TextLayoutResult.getOffsetForPosition` 换算得到）。
-     * @return true = 命中并已切换勾选态（调用方应消费该手势）；false = 未命中。
+     * @return true = 命中并已切换该行勾选态（调用方应消费该手势）；false = 未命中。
      */
     public fun toggleTaskListCheckedAtTextOffset(offset: Int): Boolean {
         val paragraph = getRichParagraphByTextIndex(offset) ?: return false
         val type = paragraph.type as? TaskList ?: return false
 
-        /** 落在正文里（marker 之后）的点击不算命中勾选框 */
-        if (offset > type.startRichSpan.textRange.end) return false
+        val text = textFieldValue.text
+        if (offset <= 0 || offset > text.length) return false
+
+        val paragraphStart = type.startRichSpan.textRange.min
+        if (offset < paragraphStart) return false
+
+        /** 行首判定：段首本身，或前一个字符是段内 `\n`（段间占位空格/下段 marker 均非 `\n`，不误判） */
+        val isLineStart =
+            offset == paragraphStart || text[offset - 1] == '\n'
+        if (!isLineStart) return false
+
+        /** 行号 = 段首到 offset 之间的 `\n` 数（行 0 = 0） */
+        val line =
+            if (offset == paragraphStart) 0
+            else text.substring(paragraphStart, offset).count { it == '\n' }
 
         recordHistory(CommitTrigger.Structural) {
-            applyTaskListCheckedOnParagraph(paragraph = paragraph, checked = !type.checked)
+            applyTaskListLineCheckedOnParagraph(
+                paragraph = paragraph,
+                line = line,
+                checked = !type.isCheckedLine(line),
+            )
         }
         return true
     }
 
     /**
-     * 在指定**指针位置**尝试切换任务列表项的勾选态（勾选框点击入口，v2026-09-15）。
+     * 在指定**指针位置**尝试切换任务列表项的勾选态（勾选框点击入口，v2026-09-15；
+     * v2026-09-16 随 [toggleTaskListCheckedAtTextOffset] 升级为**行级**——
+     * 点任意行的行首勾选框都会命中对应行）。
      *
      * 与 [toggleTaskListCheckedAtTextOffset] 的区别：调用方只提供指针坐标，
      * **「坐标 → 文本偏移」的换算放在库内完成**（内部用
@@ -3094,6 +3145,9 @@ public class RichTextState internal constructor(
                     return@fastForEachIndexed
                 }
 
+                /** 本段起点（含 marker），供 TaskList 行结构对账取段落文本区间 */
+                val paragraphStartIndex = index
+
                 val paragraphStyle = richParagraph.paragraphStyle
                     .merge(richParagraph.type.getStyle(config))
                     .withImageBlockLineHeight(richParagraph)
@@ -3123,6 +3177,32 @@ public class RichTextState internal constructor(
                                 newStyledRichSpanList.add(it)
                             },
                         )
+
+                        /**
+                         * v2026-09-16 行级渲染：TaskList 段落的**行结构对账**——
+                         * 行数（`\n` 数 + 1）变化 ⇒ checkedLines 的行号全部平移失效
+                         * ⇒ 重置（行 0 的 checked 保留）。见 [TaskList.reconcileCheckedLines]。
+                         *
+                         * ⚠️ 必须在占位空格追加之前取段落文本区间；且 reconcile 可能
+                         * 重建 `startRichSpan`（清空 checkedLines ⇒ 换 CheckBox 样式对象），
+                         * 重建对象的 textRange 会归零——本段 marker 的 textRange 已在
+                         * 本轮开头设置，须立即恢复，否则本帧绘制拿到 (0,0) 错位。
+                         */
+                        if (richParagraph.type is TaskList) {
+                            val taskType = richParagraph.type as TaskList
+                            val markerSpanBefore = taskType.startRichSpan
+                            taskType.reconcileCheckedLines(
+                                lineCount = newText
+                                    .substring(paragraphStartIndex, index)
+                                    .count { it == '\n' } + 1
+                            )
+                            if (taskType.startRichSpan !== markerSpanBefore) {
+                                taskType.startRichSpan.textRange = TextRange(
+                                    paragraphStartIndex,
+                                    paragraphStartIndex + taskType.startText.length,
+                                )
+                            }
+                        }
 
                         /**
                          * 段落之间的**占位空格**（除最后一段）：修 Compose「多段落时最后
