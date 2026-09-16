@@ -31,7 +31,7 @@ import com.mohamedrejeb.richeditor.paragraph.RichParagraph
  * 独立渲染勾选框与勾选态。
  *
  * **构成**（与 [UnorderedList] 同构）：
- * - `startRichSpan`：marker 载体，文本为**不可见占位字符**（NBSP，只用于占位与
+ * - `startRichSpan`：marker 载体，文本为**零宽占位字符**（ZWSP，只用于占位与
  *   定位），其 `richSpanStyle` 是 [RichSpanStyle.CheckBox]——勾选框由绘制层按 marker
  *   的排版位置画出来，编辑态与只读态共用同一套绘制代码；
  * - `ParagraphStyle`：`TextIndent(firstLine = restLine = base + 预留宽)`，把正文整体
@@ -274,7 +274,7 @@ internal class TaskList private constructor(
     }
 
     /**
-     * 段落缩进样式：正文（含 marker）整体右移「层级缩进 + 勾选框预留宽」。
+     * 段落缩进样式：正文整体右移「层级缩进 + 勾选框预留宽」。
      *
      * 与 [UnorderedList] 的差异：列表 marker 是**可见文本**（`"• "`），自身就占位，
      * 故只需把 marker 摆进缩进 gutter；而勾选框是**绘制的图形**，必须在段首留出
@@ -282,11 +282,10 @@ internal class TaskList private constructor(
      * restLine 同步右移（默认段落缩进语义），预留宽 = [checkBoxSize] + [checkBoxGap]，
      * 与 [RichSpanStyle.CheckBox] 的绘制约定严格一致（两处必须同步修改）。
      *
-     * **v2026-09-16 行级对齐**：单段落 + 段内 `\n`（方案 D）下，marker（NBSP）只在
-     * **行 0** 行首占宽——行 0 文字 = firstLine + NBSP 宽，行 1+ 文字 = restLine，
-     * 两者差一个 NBSP 宽（真机实测错位）。restLine 补上 [startTextWidth]
-     * （marker 实测宽，由布局回调回填，机制同列表 marker）后，各逻辑行文字起点
-     * 全部对齐到「框右缘 + gap + NBSP」，与旧多段落版（每行独立 marker）几何一致。
+     * **v2026-09-16**：marker 占位字符从 NBSP 换成零宽 ZWSP（见
+     * [TaskListMarkerText]）——NBSP 占一个字符宽，导致行 0 文字比行 1+ 多缩进
+     * 一个 NBSP（真机实测错位）；ZWSP 零宽后各逻辑行文字起点天然对齐，
+     * firstLine 与 restLine 恒相等。
      */
     private fun getNewParagraphStyle(): ParagraphStyle {
         val base = (indent * (level - 1)).toFloat()
@@ -295,7 +294,7 @@ internal class TaskList private constructor(
         return ParagraphStyle(
             textIndent = TextIndent(
                 firstLine = (base + reserved).sp,
-                restLine = (base + reserved + startTextWidth.value).sp,
+                restLine = (base + reserved).sp,
             )
         )
     }
@@ -304,13 +303,11 @@ internal class TaskList private constructor(
         getNewStartRichSpan()
 
     /**
-     * 生成段落 marker：文本是**不可见占位字符**（NBSP）。
+     * 生成段落 marker：文本是**零宽占位字符**（ZWSP，见 [TaskListMarkerText]）。
      *
-     * 为什么不用空串或零宽字符：marker 需要参与排版才能被测出位置——
-     * [RichSpanStyle] 的 `drawCustomStyle` 依赖 `TextLayoutResult.getBoundingBoxes`
-     * 拿到 marker 所在行的行盒（用于垂直居中与左缘定位），折叠 range / 零宽字符
-     * 会拿不到有效 box。NBSP 有正常宽度且视觉不可见，同时与 App 侧空块占位符
-     * （`EMPTY_BLOCK_PLACEHOLDER`）是同一字符，语义一致。
+     * 为什么不用空串：marker 需要非空文本使 `textRange` 非折叠（折叠 range 会被
+     * 绘制守卫跳过），并作为段首字符参与排版给绘制/命中提供坐标；ZWSP 零宽
+     * 不可见、不占宽度，各逻辑行文字起点因此对齐（详见 [TaskListMarkerText]）。
      */
     private fun getNewStartRichSpan(textRange: TextRange = TextRange(0)): RichSpan {
         val text = TaskListMarkerText
@@ -496,11 +493,22 @@ internal class TaskList private constructor(
 
     internal companion object {
         /**
-         * 段落 marker 的占位文本（NBSP，U+00A0）。
+         * 段落 marker 的占位文本（ZWSP，U+200B 零宽空格）。
          *
-         * 不可见 + 有正常字宽：既能被排版测出位置（供勾选框绘制定位），
-         * 又不会在视觉上留下痕迹（其宽度并入勾选框与正文之间的间距）。
+         * **为什么需要非空占位**：marker 是绘制（[RichSpanStyle.CheckBox] 的
+         * `drawCustomStyle`）与命中的锚点——非空文本使 `textRange` 非折叠、并作为
+         * 段首字符参与排版，绘制层与命中层都有稳定坐标；空文本会折叠 range，
+         * 绘制被 `textRange.collapsed` 守卫跳过。
+         *
+         * **为什么是零宽 ZWSP 而不是 NBSP**（v2026-09-16）：单段落 + 段内 `\n`
+         * （方案 D）下 NBSP 只在行 0 占一个字符宽 → 行 0 文字比行 1+ 多缩进一个
+         * NBSP（真机实测错位）；ZWSP 零宽不可见，各逻辑行文字起点天然对齐。
+         * 勾选框的定位改由 [androidx.compose.ui.text.TextLayoutResult.getCursorRect]
+         * 按行几何计算，不依赖占位字符的测量宽度（空任务段零宽行宽为 0，
+         * `getBoundingBoxes` 会因 `startOffset >= lastOffset` 返回空——getCursorRect
+         * 无此问题）。App 侧 `effectiveText` / `toMarkdown` 已剥 ZWSP，不污染字数
+         * 与持久化。
          */
-        internal const val TaskListMarkerText: String = "\u00A0"
+        internal const val TaskListMarkerText: String = "\u200B"
     }
 }

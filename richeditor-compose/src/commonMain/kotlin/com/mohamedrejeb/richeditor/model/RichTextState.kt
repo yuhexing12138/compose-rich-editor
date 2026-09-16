@@ -2131,7 +2131,7 @@ public class RichTextState internal constructor(
 
     /**
      * 数段落的已累计 `\n` 数（v2026-09-16 行级行号判定用）：深度优先遍历
-     * children 文本（marker 是 NBSP 无 `\n`，不计）。
+     * children 文本（marker 是零宽 ZWSP 无 `\n`，不计）。
      */
     private fun countParagraphNewlines(paragraph: RichParagraph): Int {
         var count = 0

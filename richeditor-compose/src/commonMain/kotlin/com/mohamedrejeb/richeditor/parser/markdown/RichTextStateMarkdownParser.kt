@@ -1035,7 +1035,7 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
     /**
      * 数段落的已累计 `\n` 数（v2026-09-16 行级渲染，续行行号判定用）：
-     * 深度优先遍历 children 文本（marker 是 NBSP 无 `\n`，不计）。
+     * 深度优先遍历 children 文本（marker 是零宽 ZWSP 无 `\n`，不计）。
      * 段文本 = 各 span 文本的深度优先拼接（与 [com.mohamedrejeb.richeditor.model.RichTextState]
      * `computeTextFromTree` 的拼接口径一致）。
      */

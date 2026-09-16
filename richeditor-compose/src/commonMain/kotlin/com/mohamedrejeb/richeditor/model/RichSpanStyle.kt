@@ -492,7 +492,7 @@ public interface RichSpanStyle {
      *
      * **用途**：作为 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 段落
      * marker（`startRichSpan`）的 `richSpanStyle`。marker 文本本身是**不可见占位
-     * 字符**（NBSP，只用于占位宽与定位），真正的勾选框由 [drawCustomStyle] 按
+     * 字符**（ZWSP 零宽占位，只用于占位锚点与定位），真正的勾选框由 [drawCustomStyle] 按
      * marker 的**排版位置**绘制。
      *
      * **为什么走绘制而不是 inlineContent**：编辑态是 BasicTextField，Compose
@@ -581,14 +581,16 @@ public interface RichSpanStyle {
          * 新行起点。段落保持**单段落 + 段内 `\n`**（方案 D 定稿），逻辑行与 `\n`
          * 一一对应；折行（同一逻辑行的视觉多行）不产生新勾选框。
          *
-         * **定位**：`getBoundingBoxes(start, start + 1)` 对单字符 range 返回**行级盒**
-         * （top/bottom = 整行行高，left = 首字符 x，见其实现）——垂直居中与原单行版
-         * 完全同式。每行勾选框 x 一致：TaskList 的 `TextIndent` firstLine 与 restLine
-         * 相同，各行文本起点同一，故以行 0（marker）左缘为基准减预留宽。
+         * **定位（v2026-09-16 改 `getCursorRect`）**：每行勾选框取该行行首 offset 的
+         * **光标矩形**（left = 行首文字 x、top/bottom = 行几何）。比字符 boundingBox
+         * 鲁棒：零宽 marker（ZWSP）、空行、空任务段都能拿到有效矩形——字符盒对
+         * 零宽/空行会因 `getBoundingBoxes` 的 `startOffset >= lastOffset` 守卫退化为
+         * 空（`lastOffset` 依赖"最后非空行的右缘"，零宽行宽为 0）。x 各行一致：
+         * TaskList 的 `TextIndent` firstLine 与 restLine 相同，各行文字起点同一，
+         * 以行 0 为基准左移「[boxSize] + [gap]」。
          *
-         * **已知取舍**：段末的"末尾空行"（段内最后字符是 `\n`）行起点 = 段末，
-         * `getBoundingBoxes` 对超出"最后非空 offset"的 range 返回空 → 不画（该行
-         * 输入首字符后勾选框即出现）；textRange 折叠（无 marker 字符）直接跳过。
+         * **已知取舍**：段末空行的行起点超过文本长度时跳过（该行输入首字符后
+         * 勾选框即出现）；textRange 折叠（无 marker 字符）直接跳过。
          */
         override fun DrawScope.drawCustomStyle(
             layoutResult: TextLayoutResult,
@@ -611,21 +613,15 @@ public interface RichSpanStyle {
                 i++
             }
 
-            /** 行 0 的盒：marker 所在行——x 基准（所有行的文本起点因 TextIndent 相同而对齐） */
-            val markerBox = layoutResult.getBoundingBoxes(
-                startOffset = textRange.start,
-                endOffset = textRange.start + 1,
-                flattenForFullParagraphs = false,
-            ).firstOrNull() ?: return
-
             val side = boxSize.toPx()
             /**
-             * marker 已被 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的
-             * TextIndent 推到「[boxSize] + [gap]」之后，故勾选框画在每行文本左缘
-             * 左侧这段预留区里：左缘 = marker 左缘 - 预留宽度。
+             * marker/行首文字已被 [com.mohamedrejeb.richeditor.paragraph.type.TaskList] 的
+             * TextIndent 推到「[boxSize] + [gap]」之后，故勾选框画在每行文字左缘
+             * 左侧这段预留区里：左缘 = 行 0 文字起点 - 预留宽度（各行文字起点相同，
+             * 单一 x 基准）。
              */
             val reserved = side + gap.toPx()
-            val left = markerBox.left - reserved + startPadding
+            val left = layoutResult.getCursorRect(textRange.start).left - reserved + startPadding
             val radius = CornerRadius(cornerRadius.toPx())
 
             lineStarts.forEachIndexed { line, lineStart ->
@@ -636,18 +632,13 @@ public interface RichSpanStyle {
                 val lineChecked = isCheckedLine(line)
 
                 /**
-                 * 行盒：该行首字符的单字符 boundingBox（行级 top/bottom）。
-                 * 段末空行（起点落在"最后非空 offset"之后或 == text.length）返回空，
-                 * 跳过该行。
+                 * 行几何：该行行首 offset 的光标矩形（left = 行首文字 x，
+                 * top/bottom = 行高）——零宽 marker、空行都有效。
                  */
-                val lineBox = layoutResult.getBoundingBoxes(
-                    startOffset = lineStart,
-                    endOffset = lineStart + 1,
-                    flattenForFullParagraphs = false,
-                ).firstOrNull() ?: return@forEachIndexed
+                val cursorRect = layoutResult.getCursorRect(lineStart)
 
-                /** 与该行垂直居中（lineBox 即该行的行级盒） */
-                val top = lineBox.top + topPadding + (lineBox.height - side) / 2f
+                /** 与该行垂直居中（cursorRect 即该行的行级盒） */
+                val top = cursorRect.top + topPadding + (cursorRect.height - side) / 2f
 
                 /** 圆角方框路径（勾选/未勾选共用同一条路径，仅填充与描边不同） */
                 val framePath = Path().apply {
