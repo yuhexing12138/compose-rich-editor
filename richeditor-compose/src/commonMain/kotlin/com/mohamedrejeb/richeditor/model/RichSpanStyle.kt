@@ -522,6 +522,9 @@ public interface RichSpanStyle {
      * @param checkedLines 行号 ≥ 1 的行级勾选态（行号 → 是否勾选；缺省 = 未勾选）。
      *   行 0 不进本 map（由 [checked] 承载），与 [com.mohamedrejeb.richeditor.paragraph.type.TaskList]
      *   的字段语义严格一致。
+     * @param taskLines 任务行集合（null = 全部行都是任务行；非 null = 仅集合内行画
+     *   勾选框，其余行为普通文本行），与 [com.mohamedrejeb.richeditor.paragraph.type.TaskList.taskLines]
+     *   语义严格一致。
      * @param boxSize 方框边长（sp）。
      * @param gap 勾选框与正文之间的间距（sp）。
      * @param cornerRadius 方框圆角。
@@ -534,6 +537,7 @@ public interface RichSpanStyle {
     public class CheckBox(
         public val checked: Boolean,
         public val checkedLines: Map<Int, Boolean> = emptyMap(),
+        public val taskLines: Set<Int>? = null,
         private val boxSize: TextUnit = DefaultTaskListCheckBoxSize,
         private val gap: TextUnit = DefaultTaskListCheckBoxGap,
         private val cornerRadius: TextUnit = DefaultTaskListCheckBoxCornerRadius,
@@ -553,6 +557,13 @@ public interface RichSpanStyle {
 
         /** 原子单元：编辑操作不切入 marker 内部 */
         override val isAtomic: Boolean = true
+
+        /**
+         * 指定逻辑行是否为**任务行**（v2026-09-16「仅光标行转换」）：
+         * [taskLines] == null 视为全部行都是任务行；否则只有集合内的行有勾选框。
+         */
+        private fun isTaskLine(line: Int): Boolean =
+            taskLines == null || line in taskLines!!
 
         /**
          * 指定逻辑行的勾选形态（v2026-09-16 行级渲染）：行 0 = [checked]，
@@ -618,6 +629,9 @@ public interface RichSpanStyle {
             val radius = CornerRadius(cornerRadius.toPx())
 
             lineStarts.forEachIndexed { line, lineStart ->
+                /** 非任务行不画勾选框（v2026-09-16「仅光标行转换」） */
+                if (!isTaskLine(line)) return@forEachIndexed
+
                 /** 该行勾选形态：行 0 走 [checked]，行 ≥ 1 查 [checkedLines] */
                 val lineChecked = isCheckedLine(line)
 
@@ -686,6 +700,7 @@ public interface RichSpanStyle {
 
             return checked == other.checked &&
                 checkedLines == other.checkedLines &&
+                taskLines == other.taskLines &&
                 boxSize == other.boxSize &&
                 gap == other.gap &&
                 cornerRadius == other.cornerRadius &&
@@ -699,6 +714,7 @@ public interface RichSpanStyle {
         override fun hashCode(): Int {
             var result = checked.hashCode()
             result = 31 * result + checkedLines.hashCode()
+            result = 31 * result + taskLines.hashCode()
             result = 31 * result + boxSize.hashCode()
             result = 31 * result + gap.hashCode()
             result = 31 * result + cornerRadius.hashCode()

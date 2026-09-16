@@ -2130,6 +2130,121 @@ public class RichTextState internal constructor(
     }
 
     /**
+     * 数段落的已累计 `\n` 数（v2026-09-16 行级行号判定用）：深度优先遍历
+     * children 文本（marker 是 NBSP 无 `\n`，不计）。
+     */
+    private fun countParagraphNewlines(paragraph: RichParagraph): Int {
+        var count = 0
+
+        fun walk(span: RichSpan) {
+            count += span.text.count { it == '\n' }
+            span.children.fastForEach { walk(it) }
+        }
+
+        paragraph.children.fastForEach { walk(it) }
+        return count
+    }
+
+    /**
+     * 在指定文本偏移所在的**行**上切换任务行标记（v2026-09-16「仅光标行转换」，
+     * App 复选框按钮入口）。
+     *
+     * 与 [toggleTaskListCheckedAtTextOffset]（翻转已有任务行的**勾选态**）不同，
+     * 本方法切换的是该行**是否为任务行**：
+     * - 所在段落是 [DefaultParagraph]（普通多行段落）：整段切为 [TaskList] 且
+     *   只有该行为任务行（[TaskList.taskLines] = 单行集合；单行段落归一化为
+     *   null = 段落级）——**不拆段**，方案 D 的手柄/空行成果保留，其余行渲染
+     *   无勾选框、markdown 编码为裸行；
+     * - 所在段落是 [TaskList]：该行是任务行 ⇒ 从 [TaskList.taskLines] 移除
+     *   （段落因此无任务行时整段退回 Default；移除后集合覆盖全部行则归一化
+     *   为 null）；该行不是任务行 ⇒ 加入集合。
+     * - 其他段落类型（有序/无序列表等）no-op。
+     *
+     * 命中即写入块内 history（可撤销）。
+     *
+     * @param offset 文本偏移（App 传光标 `selection.min`）。
+     * @return true = 已切换；false = 无操作（偏移越界 / 不支持的段落类型）。
+     */
+    public fun toggleTaskListAtTextOffset(offset: Int): Boolean {
+        val paragraph = getRichParagraphByTextIndex(offset) ?: return false
+        val text = textFieldValue.text
+        if (offset < 0 || offset > text.length) return false
+
+        return recordHistory(CommitTrigger.Structural) {
+            when (val type = paragraph.type) {
+                is DefaultParagraph -> {
+                    /** 段落起点：Default 无 marker，取首个非空 child 的起点（空段 = 行 0） */
+                    val paragraphStart = paragraph.getFirstNonEmptyChild()?.textRange?.min
+                        ?: offset
+                    val line =
+                        if (offset <= paragraphStart) 0
+                        else text.substring(paragraphStart, offset).count { it == '\n' }
+
+                    val lineCount = countParagraphNewlines(paragraph) + 1
+                    /** 单行段落：整段即该行 → 归一化为段落级（taskLines = null） */
+                    val taskLines = if (lineCount == 1) null else setOf(line)
+
+                    val newTextFieldValue = updateParagraphType(
+                        paragraph = paragraph,
+                        newType = TaskList(
+                            initialLevel = type.level,
+                            checked = false,
+                            initialTaskLines = taskLines,
+                        ),
+                        textFieldValue = textFieldValue,
+                    )
+                    updateTextFieldValue(newTextFieldValue)
+                    true
+                }
+
+                is TaskList -> {
+                    val paragraphStart = type.startRichSpan.textRange.min
+                    val line =
+                        if (offset <= paragraphStart) 0
+                        else text.substring(paragraphStart, offset).count { it == '\n' }
+
+                    if (!type.isTaskLine(line)) {
+                        /** 普通行 → 任务行 */
+                        val newLines = (type.taskLines ?: emptySet()) + line
+                        val newTextFieldValue = updateParagraphType(
+                            paragraph = paragraph,
+                            newType = type.withTaskLines(taskLines = newLines),
+                            textFieldValue = textFieldValue,
+                        )
+                        updateTextFieldValue(newTextFieldValue)
+                    } else {
+                        /** 任务行 → 普通行 */
+                        val lineCount = countParagraphNewlines(paragraph) + 1
+                        val remaining = type.effectiveTaskLines(lineCount) - line
+                        if (remaining.isEmpty()) {
+                            /** 段落因此无任务行 → 整段退回 Default（toggle 完整语义） */
+                            val newTextFieldValue = updateParagraphType(
+                                paragraph = paragraph,
+                                newType = DefaultParagraph(initialLevel = type.level),
+                                textFieldValue = textFieldValue,
+                            )
+                            updateTextFieldValue(newTextFieldValue)
+                        } else {
+                            /** 剩余集合覆盖全部行则归一化为 null（段落级全任务） */
+                            val normalized =
+                                if (remaining.size == lineCount) null else remaining
+                            val newTextFieldValue = updateParagraphType(
+                                paragraph = paragraph,
+                                newType = type.withTaskLines(taskLines = normalized),
+                                textFieldValue = textFieldValue,
+                            )
+                            updateTextFieldValue(newTextFieldValue)
+                        }
+                    }
+                    true
+                }
+
+                else -> false
+            }
+        }
+    }
+
+    /**
      * 在指定文本偏移处切换任务列表项的勾选态（**勾选框点击入口**，v2026-09-15；
      * v2026-09-16 升级为**行级**判定与翻转）。
      *
@@ -2164,6 +2279,9 @@ public class RichTextState internal constructor(
         val line =
             if (offset == paragraphStart) 0
             else text.substring(paragraphStart, offset).count { it == '\n' }
+
+        /** 非任务行没有勾选框（v2026-09-16「仅光标行转换」），行首点击放行做光标定位 */
+        if (!type.isTaskLine(line)) return false
 
         recordHistory(CommitTrigger.Structural) {
             applyTaskListLineCheckedOnParagraph(

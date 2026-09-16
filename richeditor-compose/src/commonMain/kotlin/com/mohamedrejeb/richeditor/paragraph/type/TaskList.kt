@@ -36,7 +36,9 @@ import com.mohamedrejeb.richeditor.paragraph.RichParagraph
  *   的排版位置画出来，编辑态与只读态共用同一套绘制代码；
  * - `ParagraphStyle`：`TextIndent(firstLine = restLine = base + 预留宽)`，把正文整体
  *   推到「勾选框 + 间距」右侧，左侧预留区交给勾选框绘制；
- * - [checked]：行 0（首行）勾选态；[checkedLines]：行号 ≥ 1 的行级勾选态。
+ * - [checked]：行 0（首行）勾选态；[checkedLines]：行号 ≥ 1 的行级勾选态；
+ *   [taskLines]：任务行集合（null = 全部行都是任务行，支持「仅光标行转换」的
+ *   行级混合段落——非任务行渲染无勾选框、markdown 编码为裸行）。
  *
  * **行级渲染（v2026-09-16）**：段落保持**单段落 + 段内 `\n`**（方案 D 定稿——
  * 实验矩阵证明"多段落行粒度"与"手柄行尾归属"在库架构下互斥），`RichSpanStyle.CheckBox`
@@ -61,6 +63,7 @@ internal class TaskList private constructor(
     initialLevel: Int = 1,
     initialChecked: Boolean = false,
     initialCheckedLines: Map<Int, Boolean> = emptyMap(),
+    initialTaskLines: Set<Int>? = null,
     initialLastKnownLineCount: Int = -1,
     private val checkBoxSize: TextUnit = DefaultTaskListCheckBoxSize,
     private val checkBoxGap: TextUnit = DefaultTaskListCheckBoxGap,
@@ -145,11 +148,46 @@ internal class TaskList private constructor(
         }
 
     /**
+     * **行级任务行集合**（v2026-09-16「仅光标行转换」）：哪些行是任务行（有勾选框）。
+     *
+     * - `null` = **全部行都是任务行**（段落级任务列表，旧行为，向后兼容——纯任务
+     *   块、markdown 解码的全前缀段落都用 null）；
+     * - 非 null = 只有集合内的行是任务行，其余行是**普通文本行**（无勾选框、
+     *   命中放行、markdown 编码为裸行——与 GFM 的 lazy continuation 语义对齐）。
+     *
+     * 典型来源：App 复选框按钮的「仅光标行转换」——多行普通块里只把光标行变任务行，
+     * 段落类型整体切为 [TaskList]（**不拆段**，方案 D 的手柄/空行成果保留），
+     * 其余行靠本集合排除。
+     *
+     * ⚠️ 行 0 恒为段落类型的来源（markdown 首行前缀决定段落类型），但**可以不
+     * 在集合内**（行 0 是普通行、后面某行是任务行）——此时 markdown 编码行 0 为
+     * 裸行，解码端会把它还原为 Default 段落 + 任务行段落（视觉等价、结构漂移可接受）。
+     *
+     * ⚠️ 行结构变化（增删 `\n`）时由 [reconcileCheckedLines] 重置为 `null`
+     * （退回段落级全任务语义——保守恢复，框不丢）。
+     *
+     * 变更时同样重建 `startRichSpan`（CheckBox 的相等性包含本集合）。
+     */
+    var taskLines: Set<Int>? = initialTaskLines
+        set(value) {
+            field = value
+            startRichSpan = getNewStartRichSpan()
+        }
+
+    /**
      * 上次已知的行数（`'\n'` 数 + 1），-1 = 尚未初始化（首次
      * [reconcileCheckedLines] 直接采纳，用于解析构建期不误清）。
      * 纯簿记字段：不参与 equals/hashCode。
      */
     internal var lastKnownLineCount: Int = initialLastKnownLineCount
+
+    /** 指定行是否为任务行（[taskLines] == null 视为全部行都是任务行）。 */
+    fun isTaskLine(line: Int): Boolean =
+        taskLines == null || line in taskLines!!
+
+    /** [isTaskLine] 的运行时全集展开（[taskLines] == null → 0 until [lineCount]）。 */
+    internal fun effectiveTaskLines(lineCount: Int): Set<Int> =
+        taskLines ?: (0 until lineCount).toSet()
 
     /** 指定行的勾选状态（行 0 由 [checked] 承载；越界/缺省 = 未勾选）。 */
     fun isCheckedLine(line: Int): Boolean =
@@ -157,10 +195,14 @@ internal class TaskList private constructor(
 
     /**
      * 解析构建期写入行级状态（v2026-09-16 markdown 解码：连续任务行合并为
-     * 单段落后逐行回填）。运行时翻转走 [withCheckedLines]（新实例、可撤销），
-     * **不得**用本方法（就地变更会污染历史快照的共享引用语义之外的路径）。
+     * 单段落后逐行回填；同时把该行标记为任务行）。运行时翻转走
+     * [withCheckedLines] / [withTaskLines]（新实例、可撤销），**不得**用本方法
+     * （就地变更会破坏历史快照语义）。
      */
     internal fun setLineChecked(line: Int, checked: Boolean) {
+        if (taskLines != null && line >= 0) {
+            taskLines = taskLines!! + line
+        }
         if (line <= 0) {
             this.checked = checked
         } else {
@@ -170,12 +212,24 @@ internal class TaskList private constructor(
     }
 
     /**
+     * 解析构建期把指定行标记为**非任务行**（v2026-09-16 解码端 lazy
+     * continuation 行）：[taskLines] 为 null（全任务）时显式化为
+     * `{0 until line}`（此前各行都是任务行）；已是显式集合则该行天然不在内。
+     */
+    internal fun excludeTaskLine(line: Int) {
+        if (taskLines == null && line > 0) {
+            taskLines = (0 until line).toSet()
+        }
+    }
+
+    /**
      * 渲染期行结构对账（v2026-09-16）：行数变化 ⇒ 行号全部平移 ⇒ 行级状态失义。
      *
      * - 首次（-1）＝解析构建后的第一帧：直接采纳当前行数，不清状态；
      * - 行数不变：无操作（勾选翻转不改变行数，状态保留 ✅）；
-     * - 行数变化：清空 [checkedLines]（行 0 的 [checked] 不受影响——
-     *   它不依赖行号）。保守口径：丢状态好过错位状态。
+     * - 行数变化：清空 [checkedLines]、[taskLines] 重置为 `null`
+     *   （退回**段落级全任务**语义——勾选丢、框不丢；行 0 的 [checked] 不受影响）。
+     *   保守口径：宁可退化到旧行为，也不显示错位状态。
      */
     internal fun reconcileCheckedLines(lineCount: Int) {
         if (lastKnownLineCount == lineCount) return
@@ -185,6 +239,7 @@ internal class TaskList private constructor(
         }
         lastKnownLineCount = lineCount
         if (checkedLines.isNotEmpty()) checkedLines = emptyMap()
+        if (taskLines != null) taskLines = null
     }
 
     private var style: ParagraphStyle =
@@ -245,6 +300,7 @@ internal class TaskList private constructor(
         richSpan.richSpanStyle = RichSpanStyle.CheckBox(
             checked = checked,
             checkedLines = checkedLines,
+            taskLines = taskLines,
             boxSize = checkBoxSize,
             gap = checkBoxGap,
             cornerRadius = checkBoxCornerRadius,
@@ -285,6 +341,7 @@ internal class TaskList private constructor(
             initialLevel = level,
             initialChecked = checked,
             initialCheckedLines = checkedLines,
+            initialTaskLines = taskLines,
             initialLastKnownLineCount = lastKnownLineCount,
             checkBoxSize = checkBoxSize,
             checkBoxGap = checkBoxGap,
@@ -310,6 +367,7 @@ internal class TaskList private constructor(
             initialLevel = level,
             initialChecked = checked,
             initialCheckedLines = checkedLines,
+            initialTaskLines = taskLines,
             initialLastKnownLineCount = lastKnownLineCount,
             checkBoxSize = checkBoxSize,
             checkBoxGap = checkBoxGap,
@@ -335,6 +393,30 @@ internal class TaskList private constructor(
             initialLevel = level,
             initialChecked = checked,
             initialCheckedLines = checkedLines,
+            initialTaskLines = taskLines,
+            initialLastKnownLineCount = lastKnownLineCount,
+            checkBoxSize = checkBoxSize,
+            checkBoxGap = checkBoxGap,
+            checkBoxCornerRadius = checkBoxCornerRadius,
+            checkBoxStrokeWidth = checkBoxStrokeWidth,
+            checkmarkStrokeWidth = checkmarkStrokeWidth,
+            checkedColor = checkedColor,
+            uncheckedColor = uncheckedColor,
+            checkmarkColor = checkmarkColor,
+        )
+
+    /**
+     * 以新的**任务行集合**派生同配置新类型（v2026-09-16「仅光标行转换」的
+     * 行级 toggle 入口）。与 [withChecked] 同款换实例设计（undo 快照安全）。
+     */
+    internal fun withTaskLines(taskLines: Set<Int>?): TaskList =
+        TaskList(
+            initialIndent = indent,
+            startTextWidth = startTextWidth,
+            initialLevel = level,
+            initialChecked = checked,
+            initialCheckedLines = checkedLines,
+            initialTaskLines = taskLines,
             initialLastKnownLineCount = lastKnownLineCount,
             checkBoxSize = checkBoxSize,
             checkBoxGap = checkBoxGap,
@@ -355,6 +437,7 @@ internal class TaskList private constructor(
         if (level != other.level) return false
         if (checked != other.checked) return false
         if (checkedLines != other.checkedLines) return false
+        if (taskLines != other.taskLines) return false
         if (checkBoxSize != other.checkBoxSize) return false
         if (checkBoxGap != other.checkBoxGap) return false
         if (checkBoxCornerRadius != other.checkBoxCornerRadius) return false
@@ -373,6 +456,7 @@ internal class TaskList private constructor(
         result = 31 * result + level
         result = 31 * result + checked.hashCode()
         result = 31 * result + checkedLines.hashCode()
+        result = 31 * result + taskLines.hashCode()
         result = 31 * result + checkBoxSize.hashCode()
         result = 31 * result + checkBoxGap.hashCode()
         result = 31 * result + checkBoxCornerRadius.hashCode()

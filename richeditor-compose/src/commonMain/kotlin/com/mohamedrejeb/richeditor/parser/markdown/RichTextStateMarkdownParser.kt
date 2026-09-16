@@ -529,6 +529,19 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
                              * 行粒度由 TaskList 行级渲染承载（v2026-09-16）。
                              */
                             onText("\n")
+
+                            /**
+                             * v2026-09-16「仅光标行转换」：软换行的下一行**不是列表项**
+                             * （lazy continuation 普通行）且当前段落是 TaskList ⇒ 该行
+                             * 非任务行——把 [TaskList.taskLines] 从 null（全任务）显式化
+                             * 为 `{0 until 该行行号}`（此前各行都是任务行）。显式化后
+                             * 后续任务行由 LI open 的续行分支逐行加回集合。
+                             */
+                            if (nextLineListInfo == null && lastParagraphType is TaskList) {
+                                lastParagraphType.excludeTaskLine(
+                                    countParagraphNewlines(lastParagraph)
+                                )
+                            }
                         }
                     }
 
@@ -921,14 +934,16 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
              * （`- [x] ` = 已勾选 / `- [ ] ` = 未勾选）。层级仍按每级 2 空格编码，
              * 与列表一致；解码端由 `[ ] `/`[x] ` 前缀识别为 [TaskList]。
              *
-             * 该格式与 App 侧复选框块原有的输出**完全一致**，因此存量笔记
-             * 无需迁移即可被解析回任务列表段落。
+             * v2026-09-16「仅光标行转换」：行 0 不是任务行（[TaskList.taskLines]
+             * 显式集合不含 0）时**不输出前缀**（裸行）——解码端把裸行还原为
+             * Default 段落开头、任务行段落从首个前缀行开始（视觉等价）。
              */
             is TaskList ->
-                append(
-                    "  ".repeat(type.level - 1) +
-                        if (type.checked) "- [x] " else "- [ ] "
-                )
+                if (type.isTaskLine(0))
+                    append(
+                        "  ".repeat(type.level - 1) +
+                            if (type.checked) "- [x] " else "- [ ] "
+                    )
 
             /**
              * 纯文本整段缩进（v2026-09-07）：level>1 时输出段首 EM 前缀（每级 2 个），
@@ -946,12 +961,14 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
     /**
      * 把 children 输出 chunk（[chunkStart] 起）里的段内 `\n` 后面插入**各行前缀**
-     * （v2026-09-16 行级渲染）。行 k ≥ 1 的前缀 = 层级缩进 + `- [x] ` / `- [ ] `
-     * （行 0 前缀已由 [appendParagraphStartText] 输出，chunk 内不再重复）。
+     * （v2026-09-16 行级渲染）。仅对**任务行**（[TaskList.isTaskLine]）插入：
+     * 行 k ≥ 1 的前缀 = 层级缩进 + `- [x] ` / `- [ ] `（行 0 前缀由
+     * [appendParagraphStartText] 按 `isTaskLine(0)` 输出，chunk 内不再重复）；
+     * 非任务行输出裸行（GFM lazy continuation 形态，解码端还原为普通行）。
      *
      * 例：段落 "行1\n行2"（行 1 已勾选）→ chunk "行1\n行2" →
      * `- [ ] 行1\n- [x] 行2`（chunk 前已输出 `- [ ] `）。
-     * 尾随 `\n`（段末空行）同样获得前缀 → 空任务项（与编辑态"末尾回车 = 空行"一致）。
+     * 尾随 `\n`（段末空行）：该行是任务行时输出空任务项前缀，非任务行时裸行。
      */
     private fun StringBuilder.applyTaskListLinePrefixes(chunkStart: Int, type: TaskList) {
         val chunk = substring(chunkStart, length)
@@ -962,8 +979,10 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
         append(lines[0])
         for (line in 1 until lines.size) {
             append('\n')
-            append("  ".repeat(type.level - 1))
-            append(if (type.isCheckedLine(line)) "- [x] " else "- [ ] ")
+            if (type.isTaskLine(line)) {
+                append("  ".repeat(type.level - 1))
+                append(if (type.isCheckedLine(line)) "- [x] " else "- [ ] ")
+            }
             append(lines[line])
         }
     }
