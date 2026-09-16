@@ -94,6 +94,23 @@ internal class TaskList private constructor(
         initialChecked = checked,
     )
 
+    /**
+     * 行级任务行构造（v2026-09-16「仅光标行转换」）：供库内**其他类**
+     * （如 [com.mohamedrejeb.richeditor.model.RichTextState] 的行级 toggle）创建
+     * 带 [TaskList.taskLines] 的实例——主构造是 private（派生统一走
+     * [withChecked] / [withCheckedLines] / [withTaskLines]，保证外观参数透传），
+     * 跨类只能走次构造。参数名与主构造一致，调用点三者齐用时匹配本构造。
+     */
+    constructor(
+        initialLevel: Int = 1,
+        initialChecked: Boolean = false,
+        initialTaskLines: Set<Int>? = null,
+    ) : this(
+        initialLevel = initialLevel,
+        initialChecked = initialChecked,
+        initialTaskLines = initialTaskLines,
+    )
+
     override var startTextWidth: TextUnit = startTextWidth
         set(value) {
             field = value
