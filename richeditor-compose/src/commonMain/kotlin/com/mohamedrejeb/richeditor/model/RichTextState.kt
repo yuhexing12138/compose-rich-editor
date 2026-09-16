@@ -2188,7 +2188,7 @@ public class RichTextState internal constructor(
                         paragraph = paragraph,
                         newType = TaskList(
                             initialLevel = type.level,
-                            checked = false,
+                            initialChecked = false,
                             initialTaskLines = taskLines,
                         ),
                         textFieldValue = textFieldValue,
