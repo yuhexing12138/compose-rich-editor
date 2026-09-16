@@ -281,6 +281,12 @@ internal class TaskList private constructor(
      * 一块与文本无关的空白区，否则图形会压在正文上。因此这里 firstLine 与
      * restLine 同步右移（默认段落缩进语义），预留宽 = [checkBoxSize] + [checkBoxGap]，
      * 与 [RichSpanStyle.CheckBox] 的绘制约定严格一致（两处必须同步修改）。
+     *
+     * **v2026-09-16 行级对齐**：单段落 + 段内 `\n`（方案 D）下，marker（NBSP）只在
+     * **行 0** 行首占宽——行 0 文字 = firstLine + NBSP 宽，行 1+ 文字 = restLine，
+     * 两者差一个 NBSP 宽（真机实测错位）。restLine 补上 [startTextWidth]
+     * （marker 实测宽，由布局回调回填，机制同列表 marker）后，各逻辑行文字起点
+     * 全部对齐到「框右缘 + gap + NBSP」，与旧多段落版（每行独立 marker）几何一致。
      */
     private fun getNewParagraphStyle(): ParagraphStyle {
         val base = (indent * (level - 1)).toFloat()
@@ -289,7 +295,7 @@ internal class TaskList private constructor(
         return ParagraphStyle(
             textIndent = TextIndent(
                 firstLine = (base + reserved).sp,
-                restLine = (base + reserved).sp,
+                restLine = (base + reserved + startTextWidth.value).sp,
             )
         )
     }

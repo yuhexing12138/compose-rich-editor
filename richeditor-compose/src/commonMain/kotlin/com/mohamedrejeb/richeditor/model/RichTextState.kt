@@ -2166,7 +2166,14 @@ public class RichTextState internal constructor(
      * @return true = 已切换；false = 无操作（偏移越界 / 不支持的段落类型）。
      */
     public fun toggleTaskListAtTextOffset(offset: Int): Boolean {
-        val paragraph = getRichParagraphByTextIndex(offset) ?: return false
+        /**
+         * 段落查找（v2026-09-16 补回退）：光标在**文本末尾**（offset == text.length）
+         * 时不落在任何 span 的 [min, max) 区间内，`getRichParagraphByTextIndex` 返回
+         * null → 前一位（末字符）重查，归属末段——"第三行末尾点按钮无反应"即此因。
+         */
+        val paragraph = getRichParagraphByTextIndex(offset)
+            ?: getRichParagraphByTextIndex((offset - 1).coerceAtLeast(0))
+            ?: return false
         val text = textFieldValue.text
         if (offset < 0 || offset > text.length) return false
 
@@ -2265,7 +2272,13 @@ public class RichTextState internal constructor(
         val type = paragraph.type as? TaskList ?: return false
 
         val text = textFieldValue.text
-        if (offset <= 0 || offset > text.length) return false
+        /**
+         * ⚠️ 下界是 `< 0` 而非 `<= 0`：单段落块的 marker 在 offset 0，行 0 勾选框
+         * 点击的 `getOffsetForPosition` 恰好返回 0——`<= 0` 会把行 0 的合法命中
+         * 全部拦死（真机实测"第一行不能勾选"即此因）。offset 0 走
+         * `offset == paragraphStart` 分支，不会访问 `text[offset - 1]`，安全。
+         */
+        if (offset < 0 || offset > text.length) return false
 
         val paragraphStart = type.startRichSpan.textRange.min
         if (offset < paragraphStart) return false
