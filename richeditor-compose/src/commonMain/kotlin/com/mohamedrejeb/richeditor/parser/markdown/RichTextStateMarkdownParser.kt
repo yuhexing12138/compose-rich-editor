@@ -1024,12 +1024,15 @@ internal object RichTextStateMarkdownParser : RichTextStateParser<String> {
 
         firstTextSpan.text = firstTextSpan.text.substring(match.range.last + 1)
 
-        if (firstTextSpan.text.isEmpty()) {
+        if (firstTextSpan.text.isBlank()) {
             /**
-             * 空任务项（v2026-09-16）：children 保留一个 NBSP 占位——children 全空 +
-             * 零宽 marker 时行宽为 0，光标定位退化为行盒左缘（跑到勾选框左侧，
-             * 真机实测）；NBSP 有宽度且不可见，把光标撑到框右侧、与上下文对齐
-             * （NBSP 非空白字符，`trim()` 不会剥掉；App 字数统计/序列化已剥）。
+             * 空任务项（v2026-09-16）：children 补一个 NBSP 占位——children 无实宽
+             * 字符时（全空，或剩余全是普通空格）行宽为 0，光标定位退化为行盒左缘
+             * （跑到勾选框左侧，真机实测）。⚠️ 判定必须用 isBlank 而非 isEmpty：
+             * markdown 里的 NBSP 会被 intellij-markdown 归类为 WHITE_SPACE token、
+             * 经 `onText(" ")` 归一成**普通空格**，行尾普通空格在文本布局中塌缩为
+             * 零宽——必须换成 NBSP（有宽度、不可见、`Char.isWhitespace == false`
+             * 故 `trim()` 不剥；App 字数统计/序列化已兼容）。
              */
             firstTextSpan.text = "\u00A0"
         }
